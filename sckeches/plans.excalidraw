@@ -1,0 +1,51 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://marketplace.visualstudio.com/items?itemName=pomdtr.excalidraw-editor",
+  "elements": [
+    {
+      "id": "ssUhGQtFzQUKcG36i6U4n",
+      "type": "text",
+      "x": 304,
+      "y": -177,
+      "width": 412.67962646484375,
+      "height": 350,
+      "angle": 0,
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "a1",
+      "roundness": null,
+      "seed": 1125334218,
+      "version": 366,
+      "versionNonce": 601187786,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1778015445942,
+      "link": null,
+      "locked": false,
+      "text": "Input:\n    - System\n    - Variables (Parameters of the system)\n    - List of Initial conditions\n\n\nOutputs:\n    - Time series:\n        - Requires number of iterations\n    - Displacement\n        - Requires numer of iterations\n    - Rotation number\n        - Requires max number of iterations\n",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "left",
+      "verticalAlign": "top",
+      "containerId": null,
+      "originalText": "Input:\n    - System\n    - Variables (Parameters of the system)\n    - List of Initial conditions\n\n\nOutputs:\n    - Time series:\n        - Requires number of iterations\n    - Displacement\n        - Requires numer of iterations\n    - Rotation number\n        - Requires max number of iterations\n",
+      "autoResize": true,
+      "lineHeight": 1.25
+    }
+  ],
+  "appState": {
+    "gridSize": 20,
+    "gridStep": 5,
+    "gridModeEnabled": false,
+    "viewBackgroundColor": "#ffffff"
+  },
+  "files": {}
+}
