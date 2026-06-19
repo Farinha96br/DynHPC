@@ -57,17 +57,6 @@ vector2D reflect(const vector2D& velocity, const vector2D& normal) {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
 class elipse {
 public:
     double Haxix, Vaxix; // semi-major and semi-minor axes
@@ -286,42 +275,41 @@ int main() {
     int n_elipses   = sizeof(elipses)   / sizeof(elipses[0]);
     int n_lines     = sizeof(lines)     / sizeof(lines[0]);
 
-    int row_width  = 1 + 2 * n_particles;
-    int n_rows_max = (int)((tf - t0) / dt) / strobe_interval + 2;
-    double* buffer = (double*)malloc(n_rows_max * row_width * sizeof(double));
-    int buf_count  = 0;
+    int n_rows_per_particle = (int)((tf - t0) / dt) / strobe_interval + 2;
+    // Buffer layout: particle i's x,y data starts at i * n_rows_per_particle * 2
+    double* buffer = (double*)malloc(n_particles * n_rows_per_particle * 2 * sizeof(double));
+    int buf_count  = 0; // same for all particles since dt/tf/t0 are shared
 
-    // temporal loop
-    while (t < tf) {
-        for (int i = 0; i < n_particles; i++) {
+    // Outer loop: each particle runs its full trajectory independently
+    for (int i = 0; i < n_particles; i++) {
+        t    = t0;
+        step = 0;
+        int p_count = 0;
 
+        while (t < tf) {
             double old_x = particles[i].position.x;
             double old_y = particles[i].position.y;
 
             particles[i] = yoshida4Step(particles[i], dt);
 
-            // loop for elipse collisions
             for (int j = 0; j < n_elipses; j++)
                 if (elipses[j].handle_collision(particles[i], old_x, old_y)) break;
 
-
-            // loop for line collisions
             for (int j = 0; j < n_lines; j++)
                 if (lines[j].handle_collision(particles[i], old_x, old_y)) break;
-        }
 
-        if (step % strobe_interval == 0) {
-            double* row = buffer + buf_count * row_width;
-            row[0] = t;
-            for (int i = 0; i < n_particles; i++) {
-                row[1 + 2*i]     = particles[i].position.x;
-                row[1 + 2*i + 1] = particles[i].position.y;
+            if (step % strobe_interval == 0) {
+                int idx = i * n_rows_per_particle + p_count;
+                buffer[idx * 2]     = particles[i].position.x;
+                buffer[idx * 2 + 1] = particles[i].position.y;
+                p_count++;
             }
-            buf_count++;
+
+            t += dt;
+            step++;
         }
 
-        t += dt;
-        step++;
+        if (i == 0) buf_count = p_count;
     }
 
     FILE* f = fopen("trajectories.csv", "w");
@@ -330,10 +318,11 @@ int main() {
         fprintf(f, ",x%d,y%d", i, i);
     fprintf(f, "\n");
     for (int r = 0; r < buf_count; r++) {
-        double* row = buffer + r * row_width;
-        fprintf(f, "%.6f", row[0]);
-        for (int c = 1; c < row_width; c++)
-            fprintf(f, ",%.6f", row[c]);
+        fprintf(f, "%.6f", t0 + r * strobe_interval * dt);
+        for (int i = 0; i < n_particles; i++) {
+            int idx = i * n_rows_per_particle + r;
+            fprintf(f, ",%.6f,%.6f", buffer[idx * 2], buffer[idx * 2 + 1]);
+        }
         fprintf(f, "\n");
     }
     fclose(f);
