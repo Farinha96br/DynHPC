@@ -58,6 +58,10 @@ vector2D reflect(const vector2D& velocity, const vector2D& normal) {
 
 
 
+
+
+
+
 class elipse {
 public:
     double Haxix, Vaxix; // semi-major and semi-minor axes
@@ -94,9 +98,29 @@ public:
 
 };
 
+class line {
+public:
+    // points that define the line
+    double m, b; // slope and intercept
+    line(double m, double b) : m(m), b(b) {}
+    // Get the normal vector of the line
+    vector2D normal() const {
+        // For a line y = mx + b, the normal vector can be represented as (-m, 1) or (m, -1) depending on the direction. We will use (-m, 1) for the normal vector.
+        // The outoward normal is "UP"
+        double length = sqrt(m * m + 1);
+        return vector2D(-m / length, 1 / length);
+    }
 
+    bool is_above(double x, double y) const {
+        // Check if point (x, y) is above the line: y > mx + b
+        return y > m * x + b;
+    }
 
-
+    bool is_on_line(double x, double y) const {
+        // Check if point (x, y) is on the line: y = mx + b
+        return fabs(y - (m * x + b)) < 1e-6; // Tolerance for floating-point comparison
+    }
+};
 
 
 
@@ -113,6 +137,37 @@ particle eulerStep(const particle& p, const vector2D& force, double dt) {
     return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
+particle rk4Step(const particle& p, const vector2D& force, double dt) {
+    // For simplicity, we will assume the force is constant over the time step.
+    vector2D k1_v = force;
+    vector2D k1_p = p.velocity;
+
+    vector2D k2_v = force; // Assuming constant force
+    vector2D k2_p = vector2D(p.velocity.x + 0.5 * k1_v.x * dt, p.velocity.y + 0.5 * k1_v.y * dt);
+
+    vector2D k3_v = force; // Assuming constant force
+    vector2D k3_p = vector2D(p.velocity.x + 0.5 * k2_v.x * dt, p.velocity.y + 0.5 * k2_v.y * dt);
+
+    vector2D k4_v = force; // Assuming constant force
+    vector2D k4_p = vector2D(p.velocity.x + k3_v.x * dt, p.velocity.y + k3_v.y * dt);
+
+    vector2D new_velocity(
+        p.velocity.x + (dt / 6.0) * (k1_v.x + 2 * k2_v.x + 2 * k3_v.x + k4_v.x),
+        p.velocity.y + (dt / 6.0) * (k1_v.y + 2 * k2_v.y + 2 * k3_v.y + k4_v.y)
+    );
+
+    point new_position(
+        p.position.x + (dt / 6.0) * (k1_p.x + 2 * k2_p.x + 2 * k3_p.x + k4_p.x),
+        p.position.y + (dt / 6.0) * (k1_p.y + 2 * k2_p.y + 2 * k3_p.y + k4_p.y)
+    );
+
+    return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
+}
+
+
+
+
+
 int main() {
     // create the elipse:
 
@@ -120,6 +175,11 @@ int main() {
         elipse(2.0, 1.0, 0.0, 0.0, 0, 2*M_PI), // A large elipse with a collidable section of 3 radians
         elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2) // A small elipse with a collidable section of π radians
     };
+
+    line lines[1] = {
+        line(0.0, -0.5) // A horizontal line at y = -0.5
+    };
+
     // create the gravity force:
     vector2D gravity(0.0, -1.0);
 
@@ -130,13 +190,14 @@ int main() {
     };
 
     double t0 = 0.0;
-    double dt = 0.00001;
+    double dt = 0.000001;
     double tf = 100.0;
     double t = t0;
     int step = 0;
     int strobe_interval = 1000;
     int n_particles = sizeof(particles) / sizeof(particles[0]);
     int n_elipses   = sizeof(elipses)   / sizeof(elipses[0]);
+    int n_lines     = sizeof(lines)     / sizeof(lines[0]);
 
     FILE* f = fopen("trajectories.csv", "w");
     fprintf(f, "t");
@@ -155,19 +216,35 @@ int main() {
             for (int j = 0; j < n_elipses; j++)
                 was_inside[j] = elipses[j].is_inside(old_x, old_y);
 
-            particles[i] = eulerStep(particles[i], gravity, dt);
+            bool was_above[n_lines];
+            for (int j = 0; j < n_lines; j++)
+                was_above[j] = lines[j].is_above(old_x, old_y);
+
+            particles[i] = rk4Step(particles[i], gravity, dt);
 
             // Check each ellipse for a boundary crossing
             for (int j = 0; j < n_elipses; j++) {
                 bool now_inside = elipses[j].is_inside(particles[i].position.x,
                                                         particles[i].position.y);
                 if (was_inside[j] != now_inside && elipses[j].is_on_collidable_section(old_x, old_y)) {
-                    // Reflect off the outward normal at the pre-step position
                     vector2D n = elipses[j].normal(old_x, old_y);
                     particles[i].velocity = reflect(particles[i].velocity, n);
                     particles[i].position.x = old_x;
                     particles[i].position.y = old_y;
-                    break; // one collision per step per particle
+                    break;
+                }
+            }
+
+            // Check each line for a boundary crossing
+            for (int j = 0; j < n_lines; j++) {
+                bool now_above = lines[j].is_above(particles[i].position.x,
+                                                    particles[i].position.y);
+                if (was_above[j] != now_above) {
+                    vector2D n = lines[j].normal();
+                    particles[i].velocity = reflect(particles[i].velocity, n);
+                    particles[i].position.x = old_x;
+                    particles[i].position.y = old_y;
+                    break;
                 }
             }
         }
