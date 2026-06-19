@@ -2,7 +2,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <omp.h>
+#include <random>
+#include <vector>
 
 
 
@@ -247,6 +250,9 @@ particle yoshida4Step(const particle& p, double dt) {
     return particle(x4, y4, vx3, vy3, p.mass);
 }
 
+
+
+
 int main() {
     // create the elipse:
 
@@ -260,12 +266,12 @@ int main() {
     };
 
 
-    // initializa an array of 3 particles:
     particle particles[3] = {
-        particle(1.0,  0.5,  1,  0.2),
-        particle(1.5,  0.5,  1,  0.5),
-        particle(-0.3, -0.8,  1,  0.0)
+        particle(-0.8, 0.0, 1.0, 0.5), // Particle 1
+        particle(0.0, -0.8, 1.0, 0.0), // Particle 2
+        particle(1.0, 1.0, -0.6, 0.0) // Particle 3
     };
+    
 
     double t0 = 0.0;
     double dt = 1e-5;
@@ -280,15 +286,15 @@ int main() {
     int n_elipses   = sizeof(elipses)   / sizeof(elipses[0]);
     int n_lines     = sizeof(lines)     / sizeof(lines[0]);
 
-    FILE* f = fopen("trajectories.csv", "w");
-    fprintf(f, "t");
-    for (int i = 0; i < n_particles; i++)
-        fprintf(f, ",x%d,y%d", i, i);
-    fprintf(f, "\n");
+    int row_width  = 1 + 2 * n_particles;
+    int n_rows_max = (int)((tf - t0) / dt) / strobe_interval + 2;
+    double* buffer = (double*)malloc(n_rows_max * row_width * sizeof(double));
+    int buf_count  = 0;
 
     // temporal loop
     while (t < tf) {
         for (int i = 0; i < n_particles; i++) {
+
             double old_x = particles[i].position.x;
             double old_y = particles[i].position.y;
 
@@ -305,17 +311,32 @@ int main() {
         }
 
         if (step % strobe_interval == 0) {
-            fprintf(f, "%.6f", t);
-            for (int i = 0; i < n_particles; i++)
-                fprintf(f, ",%.6f,%.6f",
-                        particles[i].position.x, particles[i].position.y);
-            fprintf(f, "\n");
+            double* row = buffer + buf_count * row_width;
+            row[0] = t;
+            for (int i = 0; i < n_particles; i++) {
+                row[1 + 2*i]     = particles[i].position.x;
+                row[1 + 2*i + 1] = particles[i].position.y;
+            }
+            buf_count++;
         }
 
         t += dt;
         step++;
     }
 
+    FILE* f = fopen("trajectories.csv", "w");
+    fprintf(f, "t");
+    for (int i = 0; i < n_particles; i++)
+        fprintf(f, ",x%d,y%d", i, i);
+    fprintf(f, "\n");
+    for (int r = 0; r < buf_count; r++) {
+        double* row = buffer + r * row_width;
+        fprintf(f, "%.6f", row[0]);
+        for (int c = 1; c < row_width; c++)
+            fprintf(f, ",%.6f", row[c]);
+        fprintf(f, "\n");
+    }
     fclose(f);
+    free(buffer);
     return 0;
 }
