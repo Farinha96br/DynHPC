@@ -62,6 +62,9 @@ vector2D reflect(const vector2D& velocity, const vector2D& normal) {
 
 
 
+
+
+
 class elipse {
 public:
     double Haxix, Vaxix; // semi-major and semi-minor axes
@@ -96,6 +99,19 @@ public:
             : (angle >= startCollisionAngle || angle <= endCollisionAngle);
     }
 
+    // Returns true if a collision occurred and modifies p in place.
+    // Encapsulates the crossing check so the time loop stays clean.
+    bool handle_collision(particle& p, double old_x, double old_y) const {
+        if (is_inside(old_x, old_y) != is_inside(p.position.x, p.position.y)
+                && is_on_collidable_section(old_x, old_y)) {
+            p.velocity   = reflect(p.velocity, normal(old_x, old_y));
+            p.position.x = old_x;
+            p.position.y = old_y;
+            return true;
+        }
+        return false;
+    }
+
 };
 
 class line {
@@ -119,6 +135,17 @@ public:
     bool is_on_line(double x, double y) const {
         // Check if point (x, y) is on the line: y = mx + b
         return fabs(y - (m * x + b)) < 1e-6; // Tolerance for floating-point comparison
+    }
+
+    // Returns true if a collision occurred and modifies p in place.
+    bool handle_collision(particle& p, double old_x, double old_y) const {
+        if (is_above(old_x, old_y) != is_above(p.position.x, p.position.y)) {
+            p.velocity   = reflect(p.velocity, normal());
+            p.position.x = old_x;
+            p.position.y = old_y;
+            return true;
+        }
+        return false;
     }
 };
 
@@ -166,14 +193,73 @@ particle rk4Step(const particle& p, const vector2D& force, double dt) {
 
 
 
+vector2D force_at_position(double x, double y) {
+    // central inverse-square force directed to origin (0,0)
+    // F = -K * r / |r|^3  (avoids singularity at origin)
+    const double K = 1; // strength of central attraction
+    double r2 = x*x + y*y;
+    double r = sqrt(r2);
+    double inv_r3 = 1.0 / (r2 * r);
+    double fx = -K * x * inv_r3;
+    double fy = -K * y * inv_r3;
+    return vector2D(fx, fy);
+}
 
+
+
+
+
+// Yoshida 4th-order symplectic integrator (Yoshida 1990).
+// Coefficients: w1 = 1/(2 - 2^(1/3)), w0 = -2^(1/3)*w1
+//   c positions: c1=c4=w1/2,  c2=c3=(w0+w1)/2
+//   d velocities: d1=d3=w1,   d2=w0
+// force argument removed: each velocity kick now queries force_at_position
+// at the current intermediate position, making this correct for any
+// position-dependent force field, not just constant gravity.
+particle yoshida4Step(const particle& p, double dt) {
+    const double cbrt2 = pow(2.0, 1.0/3.0);
+    const double w1    = 1.0 / (2.0 - cbrt2);
+    const double w0    = -cbrt2 * w1;
+
+    const double c1 = w1 / 2.0;
+    const double c2 = (w0 + w1) / 2.0;
+    const double d1 = w1;
+    const double d2 = w0;
+
+    // Sub-step 1 — position drift, then velocity kick at new position
+    double x1  = p.position.x + c1 * dt * p.velocity.x;
+    double y1  = p.position.y + c1 * dt * p.velocity.y;
+    vector2D f1 = force_at_position(x1, y1);
+    double vx1 = p.velocity.x + d1 * dt * f1.x;
+    double vy1 = p.velocity.y + d1 * dt * f1.y;
+
+    // Sub-step 2 — position drift, then velocity kick at new position
+    double x2  = x1 + c2 * dt * vx1;
+    double y2  = y1 + c2 * dt * vy1;
+    vector2D f2 = force_at_position(x2, y2);
+    double vx2 = vx1 + d2 * dt * f2.x;
+    double vy2 = vy1 + d2 * dt * f2.y;
+
+    // Sub-step 3 — position drift, then velocity kick at new position (c3=c2, d3=d1)
+    double x3  = x2 + c2 * dt * vx2;
+    double y3  = y2 + c2 * dt * vy2;
+    vector2D f3 = force_at_position(x3, y3);
+    double vx3 = vx2 + d1 * dt * f3.x;
+    double vy3 = vy2 + d1 * dt * f3.y;
+
+    // Final position drift (c4 = c1)
+    double x4  = x3 + c1 * dt * vx3;
+    double y4  = y3 + c1 * dt * vy3;
+
+    return particle(x4, y4, vx3, vy3, p.mass);
+}
 
 int main() {
     // create the elipse:
 
     elipse elipses[2] = {
-        elipse(2.0, 1.0, 0.0, 0.0, 0, 2*M_PI), // A large elipse with a collidable section of 3 radians
-        elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2) // A small elipse with a collidable section of π radians
+        elipse(2.0, 1.0, 0.0, 0.0, 0.0, 2*M_PI), // A large elipse with a collidable section of 3 radians
+        elipse(0.2, 0.2, 0.01, 0.0, 0.0, 2*M_PI) // A small elipse with a collidable section of π radians
     };
 
     line lines[1] = {
@@ -184,9 +270,10 @@ int main() {
     vector2D gravity(0.0, -1.0);
 
     // initializa an array of 3 particles:
-    particle particles[2] = {
-        particle(1.0,  0.5,  0.2,  0.2),
-        particle(1.5,  0.5,  0.5,  0.5)
+    particle particles[3] = {
+        particle(1.0,  0.5,  1,  0.2),
+        particle(1.5,  0.5,  1,  0.5),
+        particle(-0.3, -0.8,  1,  0.0)
     };
 
     double t0 = 0.0;
@@ -194,7 +281,7 @@ int main() {
     double tf = 100.0;
     double t = t0;
     int step = 0;
-    int strobe_interval = 1000;
+    int strobe_interval = 10000;
     int n_particles = sizeof(particles) / sizeof(particles[0]);
     int n_elipses   = sizeof(elipses)   / sizeof(elipses[0]);
     int n_lines     = sizeof(lines)     / sizeof(lines[0]);
@@ -211,42 +298,16 @@ int main() {
             double old_x = particles[i].position.x;
             double old_y = particles[i].position.y;
 
-            // Snapshot inside/outside state for every ellipse before the step
-            bool was_inside[n_elipses];
+            particles[i] = yoshida4Step(particles[i], dt);
+
+            // loop for elipse collisions
             for (int j = 0; j < n_elipses; j++)
-                was_inside[j] = elipses[j].is_inside(old_x, old_y);
+                if (elipses[j].handle_collision(particles[i], old_x, old_y)) break;
 
-            bool was_above[n_lines];
+
+            // loop for line collisions
             for (int j = 0; j < n_lines; j++)
-                was_above[j] = lines[j].is_above(old_x, old_y);
-
-            particles[i] = rk4Step(particles[i], gravity, dt);
-
-            // Check each ellipse for a boundary crossing
-            for (int j = 0; j < n_elipses; j++) {
-                bool now_inside = elipses[j].is_inside(particles[i].position.x,
-                                                        particles[i].position.y);
-                if (was_inside[j] != now_inside && elipses[j].is_on_collidable_section(old_x, old_y)) {
-                    vector2D n = elipses[j].normal(old_x, old_y);
-                    particles[i].velocity = reflect(particles[i].velocity, n);
-                    particles[i].position.x = old_x;
-                    particles[i].position.y = old_y;
-                    break;
-                }
-            }
-
-            // Check each line for a boundary crossing
-            for (int j = 0; j < n_lines; j++) {
-                bool now_above = lines[j].is_above(particles[i].position.x,
-                                                    particles[i].position.y);
-                if (was_above[j] != now_above) {
-                    vector2D n = lines[j].normal();
-                    particles[i].velocity = reflect(particles[i].velocity, n);
-                    particles[i].position.x = old_x;
-                    particles[i].position.y = old_y;
-                    break;
-                }
-            }
+                if (lines[j].handle_collision(particles[i], old_x, old_y)) break;
         }
 
         if (step % strobe_interval == 0) {
