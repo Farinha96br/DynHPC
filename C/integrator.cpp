@@ -194,15 +194,8 @@ particle rk4Step(const particle& p, const vector2D& force, double dt) {
 
 
 vector2D force_at_position(double x, double y) {
-    // central inverse-square force directed to origin (0,0)
-    // F = -K * r / |r|^3  (avoids singularity at origin)
-    const double K = 1; // strength of central attraction
-    double r2 = x*x + y*y;
-    double r = sqrt(r2);
-    double inv_r3 = 1.0 / (r2 * r);
-    double fx = -K * x * inv_r3;
-    double fy = -K * y * inv_r3;
-    return vector2D(fx, fy);
+
+    return vector2D(0, -1);
 }
 
 
@@ -258,16 +251,14 @@ int main() {
     // create the elipse:
 
     elipse elipses[2] = {
-        elipse(2.0, 1.0, 0.0, 0.0, 0.0, 2*M_PI), // A large elipse with a collidable section of 3 radians
-        elipse(0.2, 0.2, 0.01, 0.0, 0.0, 2*M_PI) // A small elipse with a collidable section of π radians
+        elipse(2.0, 1.0, 0.0,  0.0,  0,      2*M_PI),
+        elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2)
     };
 
     line lines[1] = {
         line(0.0, -0.5) // A horizontal line at y = -0.5
     };
 
-    // create the gravity force:
-    vector2D gravity(0.0, -1.0);
 
     // initializa an array of 3 particles:
     particle particles[3] = {
@@ -277,11 +268,14 @@ int main() {
     };
 
     double t0 = 0.0;
-    double dt = 0.000001;
+    double dt = 1e-5;
     double tf = 100.0;
     double t = t0;
     int step = 0;
-    int strobe_interval = 10000;
+    int strobe_interval = 0.01/dt;
+
+    
+
     int n_particles = sizeof(particles) / sizeof(particles[0]);
     int n_elipses   = sizeof(elipses)   / sizeof(elipses[0]);
     int n_lines     = sizeof(lines)     / sizeof(lines[0]);
