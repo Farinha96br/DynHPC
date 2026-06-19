@@ -4,7 +4,8 @@
 #include <cstdlib>
 #include <omp.h>
 
-// create a class for elipse object and to calculate their normals:
+
+
 /*
 compile with:
     g++ -O2 -fopenmp -o integrator integrator2.cpp -lm
@@ -33,9 +34,10 @@ struct vector2D {
 };
 
 
+
 struct particle {
     /*
-    Basic struct for particle with position and velocity.
+    Basic struct for particle with position and velocity and unit mass
     */
     point position;
     vector2D velocity;
@@ -53,12 +55,15 @@ vector2D reflect(const vector2D& velocity, const vector2D& normal) {
 
 
 
+
+
+
 class elipse {
 public:
     double Haxix, Vaxix; // semi-major and semi-minor axes
     double centerX, centerY; // center of the elipse
-    double collision_section; // angle range in radians in which the elipse is collidable (0 to 2*pi)
-    elipse(double h, double v, double cx, double cy) : Haxix(h), Vaxix(v), centerX(cx), centerY(cy) {}
+    double startCollisionAngle, endCollisionAngle; // angle range in radians in which the elipse is collidable (0 to 2*pi)
+    elipse(double h, double v, double cx, double cy, double sca, double eca) : Haxix(h), Vaxix(v), centerX(cx), centerY(cy), startCollisionAngle(sca), endCollisionAngle(eca) {}
     // Outward unit normal at surface point (x, y): gradient of F = (x-cx)²/a² + (y-cy)²/b² - 1, normalized.
     vector2D normal(double x, double y) const {
         double dx = (x - centerX) / (Haxix * Haxix);
@@ -69,24 +74,35 @@ public:
 
     bool is_inside(double x, double y) const {
         // Check if point (x, y) is inside the elipse: F < 0
-        double F = pow((x - centerX) / Haxix, 2) + std::pow((y - centerY) / Vaxix, 2) - 1;
-        return F < 0;
+        double check = pow((x - centerX) / Haxix, 2) + std::pow((y - centerY) / Vaxix, 2) - 1;
+        return check < 0;
     }
 
     bool is_on_surface(double x, double y) const {
         // Check if point (x, y) is on the surface of the elipse: F = 0
-        double F = pow((x - centerX) / Haxix, 2) + std::pow((y - centerY) / Vaxix, 2) - 1;
-        return fabs(F) < 1e-6; // Tolerance for floating-point comparison
+        double check = pow((x - centerX) / Haxix, 2) + std::pow((y - centerY) / Vaxix, 2) - 1;
+        return fabs(check) < 1e-6; // Tolerance for floating-point comparison
     }
 
-    bool is_collidable(double x, double y) const {
-        // Check if point (x, y) is within the collidable section of the elipse
+    bool is_on_collidable_section(double x, double y) const {
         double angle = atan2(y - centerY, x - centerX);
-        if (angle < 0) angle += 2 * M_PI; // Normalize angle to [0, 2*pi]
-        return angle <= collision_section;
+        if (angle < 0) angle += 2 * M_PI;
+        return (startCollisionAngle <= endCollisionAngle)
+            ? (angle >= startCollisionAngle && angle <= endCollisionAngle)
+            : (angle >= startCollisionAngle || angle <= endCollisionAngle);
     }
 
 };
+
+
+
+
+
+
+
+
+
+
 
 
 particle eulerStep(const particle& p, const vector2D& force, double dt) {
@@ -97,30 +113,20 @@ particle eulerStep(const particle& p, const vector2D& force, double dt) {
     return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
- 
-
-
-
-
-
-
-
-
 int main() {
     // create the elipse:
 
     elipse elipses[2] = {
-        elipse(2.0, 1.0, 0.0, 0.0),
-        elipse(0.1, 0.2, 0.01, -0.01)
+        elipse(2.0, 1.0, 0.0, 0.0, 0, 2*M_PI), // A large elipse with a collidable section of 3 radians
+        elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2) // A small elipse with a collidable section of π radians
     };
     // create the gravity force:
     vector2D gravity(0.0, -1.0);
 
     // initializa an array of 3 particles:
-    particle particles[3] = {
-        particle(1.0,  0.5,  0.1,  0.1),
-        particle(2.0,  1.0, -0.1, -0.1),
-        particle(0.001,  0.5,  0.0,  0.0)
+    particle particles[2] = {
+        particle(1.0,  0.5,  0.2,  0.2),
+        particle(1.5,  0.5,  0.5,  0.5)
     };
 
     double t0 = 0.0;
@@ -155,7 +161,7 @@ int main() {
             for (int j = 0; j < n_elipses; j++) {
                 bool now_inside = elipses[j].is_inside(particles[i].position.x,
                                                         particles[i].position.y);
-                if (was_inside[j] != now_inside) {
+                if (was_inside[j] != now_inside && elipses[j].is_on_collidable_section(old_x, old_y)) {
                     // Reflect off the outward normal at the pre-step position
                     vector2D n = elipses[j].normal(old_x, old_y);
                     particles[i].velocity = reflect(particles[i].velocity, n);
