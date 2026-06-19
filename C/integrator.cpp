@@ -39,7 +39,8 @@ struct particle {
     */
     point position;
     vector2D velocity;
-    particle(double x, double y, double vx, double vy) : position(x, y), velocity(vx, vy) {}
+    double mass = 1.0; // Assuming unit mass for simplicity
+    particle(double x, double y, double vx, double vy, double m = 1.0) : position(x, y), velocity(vx, vy), mass(m) {}
 };
 
 
@@ -52,15 +53,11 @@ vector2D reflect(const vector2D& velocity, const vector2D& normal) {
 
 
 
-
-
-
-
-
 class elipse {
 public:
     double Haxix, Vaxix; // semi-major and semi-minor axes
     double centerX, centerY; // center of the elipse
+    double collision_section; // angle range in radians in which the elipse is collidable (0 to 2*pi)
     elipse(double h, double v, double cx, double cy) : Haxix(h), Vaxix(v), centerX(cx), centerY(cy) {}
     // Outward unit normal at surface point (x, y): gradient of F = (x-cx)²/a² + (y-cy)²/b² - 1, normalized.
     vector2D normal(double x, double y) const {
@@ -82,10 +79,25 @@ public:
         return fabs(F) < 1e-6; // Tolerance for floating-point comparison
     }
 
+    bool is_collidable(double x, double y) const {
+        // Check if point (x, y) is within the collidable section of the elipse
+        double angle = atan2(y - centerY, x - centerX);
+        if (angle < 0) angle += 2 * M_PI; // Normalize angle to [0, 2*pi]
+        return angle <= collision_section;
+    }
+
 };
 
 
+particle eulerStep(const particle& p, const vector2D& force, double dt) {
+    // Update velocity based on force
+    vector2D new_velocity(p.velocity.x + force.x * dt, p.velocity.y + force.y * dt);
+    // Update position based on new velocity
+    point new_position(p.position.x + new_velocity.x * dt, p.position.y + new_velocity.y * dt);
+    return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
+}
 
+ 
 
 
 
@@ -137,11 +149,7 @@ int main() {
             for (int j = 0; j < n_elipses; j++)
                 was_inside[j] = elipses[j].is_inside(old_x, old_y);
 
-            // Symplectic Euler: update velocity first, then position
-            particles[i].velocity.x += gravity.x * dt;
-            particles[i].velocity.y += gravity.y * dt;
-            particles[i].position.x += particles[i].velocity.x * dt;
-            particles[i].position.y += particles[i].velocity.y * dt;
+            particles[i] = eulerStep(particles[i], gravity, dt);
 
             // Check each ellipse for a boundary crossing
             for (int j = 0; j < n_elipses; j++) {
