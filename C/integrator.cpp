@@ -150,26 +150,24 @@ vector2D calculateNormal(const collisionableObject& obj, double x, double y) {
     return vector2D(dFdx / length, dFdy / length); // Normalize the normal vector
 }
 
-bool checkOnTop(const collisionableObject& obj, double x, double y) {
-    // Check if the point (x, y) is on top of the surface defined by the implicit function
-    double F = obj.implicit_form(obj.p, x, y);
-    if (F == 0) {
-        return true; // On the surface
-    }
-    else{
-        return false; // Not on the surface
-    }
-}
+
 
 
 
 
 void printTest(const collisionableObject& obj, double x, double y) {
     // Print the value of the implicit function at point (x, y)
+    vector2D normal = calculateNormal(obj, x, y);
     double F = obj.implicit_form(obj.p, x, y);
-    printf("Is on top? %s\n", checkOnTop(obj, x, y) ? "Yes" : "No");
-    printf("F(%g, %g) = %g  ->  %s\n", x, y, F, F < 0 ? "inside" : "outside");
-    printf("Normal at (%g, %g): (%g, %g)\n", x, y, calculateNormal(obj, x, y).x, calculateNormal(obj, x, y).y);
+    if (F < 0) {
+        printf("Point (%g, %g) is inside (F = %g)\n", x, y, F);
+    } else if (F > 0) {
+        printf("Point (%g, %g) is outside  (F = %g)\n", x, y, F);
+    } else {
+        printf("Point (%g, %g) is on the surface (F = %g)\n", x, y, F);
+    }
+    
+    printf("Normal at (%g, %g): (%g, %g)\n", x, y, normal.x, normal.y);
 }
 
 
@@ -182,6 +180,13 @@ double circle_dy(const double* p, double x, double y){ return 2*(y-p[1]); }
 double line_F (const double* p, double x, double y){ return y - p[0]*x + p[1]; } // p[0] = slope (m), p[1] = y-intercept (b)
 double line_dx(const double* p, double x, double y){ return -p[0]; } // derivative with respect to x
 double line_dy(const double* p, double x, double y){ return 1; } // derivative with respect to y
+
+// define a sine wave (for example, y - A*sin(k*x + phi) = 0)
+double sine_F (const double* p, double x, double y){ return y - p[0]*sin(p[1]*x + p[2]); } // p[0] = amplitude (A), p[1] = wave number (k), p[2] = phase (phi)
+double sine_dx(const double* p, double x, double y){ return -p[0]*p[1]*cos(p[1]*x + p[2]); }
+double sine_dy(const double* p, double x, double y){ return 1; }
+
+
 
 
 int main(){
@@ -197,13 +202,17 @@ int main(){
     circle.dx = circle_dx;
     circle.dy = circle_dy;
 
-    double x = 1.0, y = 1.0;  
+    double x = 0.0;
+    
+    for (double y = -1.5; y <= 1.5; y += 0.5) {
+    printf("===========\n");
+    
     printf("Testing circle at (%g, %g)\n", x, y);
     printTest(circle, x, y);
 
     collisionableObject line;
     line.n = 2;       // number of parameters for the line
-    line.p[0] = -0.0;   // slope (m)
+    line.p[0] = 0.5;   // slope (m)
     line.p[1] = 0.0;   // y-intercept (b)
     line.implicit_form = line_F;
     line.dx = line_dx;
@@ -212,8 +221,18 @@ int main(){
     printf("\nTesting line at (%g, %g)\n", x, y);
     printTest(line, x, y);
 
-    
+    collisionableObject sine;
+    sine.n = 3;       // number of parameters for the sine wave
+    sine.p[0] = 1.0;   // amplitude (A)
+    sine.p[1] = 1.0;   // wave number (k)
+    sine.p[2] = 0.0;   // phase (phi)
+    sine.implicit_form = sine_F;
+    sine.dx = sine_dx;
+    sine.dy = sine_dy;
 
+    printf("\nTesting sine wave at (%g, %g)\n", x, y);
+    printTest(sine, x, y);
+    }
 
     return 0;
 }
