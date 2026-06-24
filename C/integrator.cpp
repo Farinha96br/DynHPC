@@ -54,31 +54,59 @@ class elipse {
 public:
     double Haxix, Vaxix; // semi-major and semi-minor axes
     double centerX, centerY; // center of the elipse
+    double theta; // rotation angle of the elipse in radians
     double startCollisionAngle, endCollisionAngle; // angle range in radians in which the elipse is collidable (0 to 2*pi)
-    elipse(double h, double v, double cx, double cy, double sca, double eca) : Haxix(h), Vaxix(v), centerX(cx), centerY(cy), startCollisionAngle(sca), endCollisionAngle(eca) {}
-    // Outward unit normal at surface point (x, y): gradient of F = (x-cx)²/a² + (y-cy)²/b² - 1, normalized.
+    elipse(double h, double v, double cx, double cy, double sca, double eca, double th = 0.0)
+        : Haxix(h), Vaxix(v), centerX(cx), centerY(cy), theta(th), startCollisionAngle(sca), endCollisionAngle(eca) {}
+    // Outward unit normal at surface point (x, y): gradient of the rotated ellipse implicit equation, normalized.
     vector2D normal(double x, double y) const {
-        double dx = (x - centerX) / (Haxix * Haxix);
-        double dy = (y - centerY) / (Vaxix * Vaxix);
-        double length = sqrt(dx * dx + dy * dy);
-        return vector2D(dx / length, dy / length);
+        double dx = x - centerX;
+        double dy = y - centerY;
+        double c = cos(theta);
+        double s = sin(theta);
+
+        double localX =  c * dx + s * dy;
+        double localY = -s * dx + c * dy;
+
+        double nx = c * localX / (Haxix * Haxix) - s * localY / (Vaxix * Vaxix);
+        double ny = s * localX / (Haxix * Haxix) + c * localY / (Vaxix * Vaxix);
+
+        double length = sqrt(nx * nx + ny * ny);
+        return vector2D(nx / length, ny / length);
+    }
+
+    vector2D to_local(double x, double y) const {
+        double dx = x - centerX;
+        double dy = y - centerY;
+        double c = cos(theta);
+        double s = sin(theta);
+        return vector2D(c * dx + s * dy, -s * dx + c * dy);
+    }
+
+    double implicit_value(double x, double y) const {
+        vector2D local = to_local(x, y);
+        return pow(local.x / Haxix, 2) + pow(local.y / Vaxix, 2) - 1;
+    }
+
+    double boundary_angle(double x, double y) const {
+        vector2D local = to_local(x, y);
+        double angle = atan2(local.y, local.x);
+        if (angle < 0) angle += 2 * M_PI;
+        return angle;
     }
 
     bool is_inside(double x, double y) const {
         // Check if point (x, y) is inside the elipse: F < 0
-        double check = pow((x - centerX) / Haxix, 2) + std::pow((y - centerY) / Vaxix, 2) - 1;
-        return check < 0;
+        return implicit_value(x, y) < 0;
     }
 
     bool is_on_surface(double x, double y) const {
         // Check if point (x, y) is on the surface of the elipse: F = 0
-        double check = pow((x - centerX) / Haxix, 2) + std::pow((y - centerY) / Vaxix, 2) - 1;
-        return fabs(check) < 1e-6; // Tolerance for floating-point comparison
+        return fabs(implicit_value(x, y)) < 1e-6; // Tolerance for floating-point comparison
     }
 
     bool is_on_collidable_section(double x, double y) const {
-        double angle = atan2(y - centerY, x - centerX);
-        if (angle < 0) angle += 2 * M_PI;
+        double angle = boundary_angle(x, y);
         return (startCollisionAngle <= endCollisionAngle)
             ? (angle >= startCollisionAngle && angle <= endCollisionAngle)
             : (angle >= startCollisionAngle || angle <= endCollisionAngle);
@@ -235,12 +263,19 @@ particle yoshida4Step(const particle& p, double dt) {
 
 
 
+
+
+
+
+
+
 int main() {
     // create the elipse:
 
-    elipse elipses[2] = {
-        elipse(2.0, 1.0, 0.0,  0.0,  0,      2*M_PI),
-        elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2)
+    elipse elipses[3] = {
+        elipse(2.0, 1.0, 0.5,  0.0,  0,      2*M_PI, 0.5),
+        elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2),
+        elipse(0.1, 5.0, -2.0,  0.5, 0, 2*M_PI)
     };
 
     line lines[1] = {
@@ -251,7 +286,7 @@ int main() {
     particle particles[3] = {
         particle(-0.8, 0.0, 1.0, 0.5), // Particle 1
         particle(0.0, -0.8, 1.0, 0.0), // Particle 2
-        particle(1.0, 1.0, -0.6, 0.0) // Particle 3
+        particle(1.0, 2.0, -0.6, 0.0) // Particle 3
     };
     
 
