@@ -20,13 +20,6 @@ ran with:
 
 
 
-struct point {
-    /*
-    Basic struct for XY point pair.
-    */
-    double x, y;
-    point(double x, double y) : x(x), y(y) {}
-};
 
 struct vector2D {
     /*
@@ -42,7 +35,7 @@ struct particle {
     /*
     Basic struct for particle with position and velocity and unit mass
     */
-    point position;
+    vector2D position;
     vector2D velocity;
     double mass = 1.0; // Assuming unit mass for simplicity
     particle(double x, double y, double vx, double vy, double m = 1.0) : position(x, y), velocity(vx, vy), mass(m) {}
@@ -152,7 +145,7 @@ particle eulerStep(const particle& p, const vector2D& force, double dt) {
     // Update velocity based on force
     vector2D new_velocity(p.velocity.x + force.x * dt, p.velocity.y + force.y * dt);
     // Update position based on new velocity
-    point new_position(p.position.x + new_velocity.x * dt, p.position.y + new_velocity.y * dt);
+    vector2D new_position(p.position.x + new_velocity.x * dt, p.position.y + new_velocity.y * dt);
     return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
@@ -175,7 +168,7 @@ particle rk4Step(const particle& p, const vector2D& force, double dt) {
         p.velocity.y + (dt / 6.0) * (k1_v.y + 2 * k2_v.y + 2 * k3_v.y + k4_v.y)
     );
 
-    point new_position(
+    vector2D new_position(
         p.position.x + (dt / 6.0) * (k1_p.x + 2 * k2_p.x + 2 * k3_p.x + k4_p.x),
         p.position.y + (dt / 6.0) * (k1_p.y + 2 * k2_p.y + 2 * k3_p.y + k4_p.y)
     );
