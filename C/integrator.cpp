@@ -1,14 +1,14 @@
 
+#define MAX_PARAMS 10 // maximun number of parameters for the equations defining the collisionable objects
+#define MAX_
+
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <omp.h>
 #include <random>
-#include <vector>
-
-
-
 /*
 compile with:
     g++ -O2 -fopenmp -o integrator integrator2.cpp -lm
@@ -20,7 +20,6 @@ ran with:
 
 
 
-
 struct vector2D {
     /*
     Basic struct for vector in 2D space.
@@ -28,8 +27,6 @@ struct vector2D {
     double x, y;
     vector2D(double x, double y) : x(x), y(y) {}
 };
-
-
 
 struct particle {
     /*
@@ -43,131 +40,14 @@ struct particle {
 
 
 
+
+
+
 vector2D reflect(const vector2D& velocity, const vector2D& normal) {
     // Reflect velocity across the plane defined by the normal
     double dot = velocity.x * normal.x + velocity.y * normal.y;
     return vector2D(velocity.x - 2 * dot * normal.x, velocity.y - 2 * dot * normal.y);
 }
-
-
-class elipse {
-public:
-    double Haxix, Vaxix; // semi-major and semi-minor axes
-    double centerX, centerY; // center of the elipse
-    double theta; // rotation angle of the elipse in radians
-    double startCollisionAngle, endCollisionAngle; // angle range in radians in which the elipse is collidable (0 to 2*pi)
-    elipse(double h, double v, double cx, double cy, double sca, double eca, double th = 0.0)
-        : Haxix(h), Vaxix(v), centerX(cx), centerY(cy), theta(th), startCollisionAngle(sca), endCollisionAngle(eca) {}
-    // Outward unit normal at surface point (x, y): gradient of the rotated ellipse implicit equation, normalized.
-    vector2D normal(double x, double y) const {
-        double dx = x - centerX;
-        double dy = y - centerY;
-        double c = cos(theta);
-        double s = sin(theta);
-
-        double localX =  c * dx + s * dy;
-        double localY = -s * dx + c * dy;
-
-        double nx = c * localX / (Haxix * Haxix) - s * localY / (Vaxix * Vaxix);
-        double ny = s * localX / (Haxix * Haxix) + c * localY / (Vaxix * Vaxix);
-
-        double length = sqrt(nx * nx + ny * ny);
-        return vector2D(nx / length, ny / length);
-    }
-
-    vector2D to_local(double x, double y) const {
-        double dx = x - centerX;
-        double dy = y - centerY;
-        double c = cos(theta);
-        double s = sin(theta);
-        return vector2D(c * dx + s * dy, -s * dx + c * dy);
-    }
-
-    double implicit_value(double x, double y) const {
-        vector2D local = to_local(x, y);
-        return pow(local.x / Haxix, 2) + pow(local.y / Vaxix, 2) - 1;
-    }
-
-    double boundary_angle(double x, double y) const {
-        vector2D local = to_local(x, y);
-        double angle = atan2(local.y, local.x);
-        if (angle < 0) angle += 2 * M_PI;
-        return angle;
-    }
-
-    bool is_inside(double x, double y) const {
-        // Check if point (x, y) is inside the elipse: F < 0
-        return implicit_value(x, y) < 0;
-    }
-
-    bool is_on_surface(double x, double y) const {
-        // Check if point (x, y) is on the surface of the elipse: F = 0
-        return fabs(implicit_value(x, y)) < 1e-6; // Tolerance for floating-point comparison
-    }
-
-    bool is_on_collidable_section(double x, double y) const {
-        double angle = boundary_angle(x, y);
-        return (startCollisionAngle <= endCollisionAngle)
-            ? (angle >= startCollisionAngle && angle <= endCollisionAngle)
-            : (angle >= startCollisionAngle || angle <= endCollisionAngle);
-    }
-
-    // Returns true if a collision occurred and modifies p in place.
-    // Encapsulates the crossing check so the time loop stays clean.
-    bool handle_collision(particle& p, double old_x, double old_y) const {
-        if (is_inside(old_x, old_y) != is_inside(p.position.x, p.position.y)
-                && is_on_collidable_section(old_x, old_y)) {
-            p.velocity   = reflect(p.velocity, normal(old_x, old_y));
-            p.position.x = old_x;
-            p.position.y = old_y;
-            return true;
-        }
-        return false;
-    }
-
-};
-
-class line {
-public:
-    // points that define the line
-    double m, b; // slope and intercept
-    line(double m, double b) : m(m), b(b) {}
-    // Get the normal vector of the line
-    vector2D normal() const {
-        // For a line y = mx + b, the normal vector can be represented as (-m, 1) or (m, -1) depending on the direction. We will use (-m, 1) for the normal vector.
-        // The outoward normal is "UP"
-        double length = sqrt(m * m + 1);
-        return vector2D(-m / length, 1 / length);
-    }
-
-    bool is_above(double x, double y) const {
-        // Check if point (x, y) is above the line: y > mx + b
-        return y > m * x + b;
-    }
-
-    bool is_on_line(double x, double y) const {
-        // Check if point (x, y) is on the line: y = mx + b
-        return fabs(y - (m * x + b)) < 1e-6; // Tolerance for floating-point comparison
-    }
-
-    // Returns true if a collision occurred and modifies p in place.
-    bool handle_collision(particle& p, double old_x, double old_y) const {
-        if (is_above(old_x, old_y) != is_above(p.position.x, p.position.y)) {
-            p.velocity   = reflect(p.velocity, normal());
-            p.position.x = old_x;
-            p.position.y = old_y;
-            return true;
-        }
-        return false;
-    }
-};
-
-
-
-
-
-
-
 
 particle eulerStep(const particle& p, const vector2D& force, double dt) {
     // Update velocity based on force
@@ -204,24 +84,11 @@ particle rk4Step(const particle& p, const vector2D& force, double dt) {
     return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
-
-
 vector2D force_at_position(double x, double y) {
 
     return vector2D(0, -1);
 }
 
-
-
-
-
-// Yoshida 4th-order symplectic integrator (Yoshida 1990).
-// Coefficients: w1 = 1/(2 - 2^(1/3)), w0 = -2^(1/3)*w1
-//   c positions: c1=c4=w1/2,  c2=c3=(w0+w1)/2
-//   d velocities: d1=d3=w1,   d2=w0
-// force argument removed: each velocity kick now queries force_at_position
-// at the current intermediate position, making this correct for any
-// position-dependent force field, not just constant gravity.
 particle yoshida4Step(const particle& p, double dt) {
     const double cbrt2 = pow(2.0, 1.0/3.0);
     const double w1    = 1.0 / (2.0 - cbrt2);
@@ -263,97 +130,90 @@ particle yoshida4Step(const particle& p, double dt) {
 
 
 
+struct collisionableObject {
+    double p[MAX_PARAMS] = {};   // any length up to MAX, flat, no heap
+    int    n = 0;                // how many are actually used
+    double (*implicit_form)(const double*, double, double) = nullptr;
+    double (*dx)(const double*, double, double) = nullptr;
+    double (*dy)(const double*, double, double) = nullptr;
+};
+
+
+vector2D calculateNormal(const collisionableObject& obj, double x, double y) {
+    // Calculate the normal vector at point (x, y) on the surface defined by the implicit function
+    double dFdx = obj.dx(obj.p, x, y);
+    double dFdy = obj.dy(obj.p, x, y);
+    double length = std::sqrt(dFdx * dFdx + dFdy * dFdy);
+    double signal = obj.implicit_form(obj.p, x, y) < 0 ? -1 : 1; // Determine the sign based on whether the point is inside or outside
+    dFdx *= signal;
+    dFdy *= signal;
+    return vector2D(dFdx / length, dFdy / length); // Normalize the normal vector
+}
+
+bool checkOnTop(const collisionableObject& obj, double x, double y) {
+    // Check if the point (x, y) is on top of the surface defined by the implicit function
+    double F = obj.implicit_form(obj.p, x, y);
+    if (F == 0) {
+        return true; // On the surface
+    }
+    else{
+        return false; // Not on the surface
+    }
+}
 
 
 
 
+void printTest(const collisionableObject& obj, double x, double y) {
+    // Print the value of the implicit function at point (x, y)
+    double F = obj.implicit_form(obj.p, x, y);
+    printf("Is on top? %s\n", checkOnTop(obj, x, y) ? "Yes" : "No");
+    printf("F(%g, %g) = %g  ->  %s\n", x, y, F, F < 0 ? "inside" : "outside");
+    printf("Normal at (%g, %g): (%g, %g)\n", x, y, calculateNormal(obj, x, y).x, calculateNormal(obj, x, y).y);
+}
 
 
-int main() {
-    // create the elipse:
+// define the equations of the circle
+double circle_F (const double* p, double x, double y){ double delta_x=x-p[0], delta_y=y-p[1]; return delta_x*delta_x + delta_y*delta_y - p[2]*p[2]; }
+double circle_dx(const double* p, double x, double y){ return 2*(x-p[0]); }
+double circle_dy(const double* p, double x, double y){ return 2*(y-p[1]); }
 
-    elipse elipses[3] = {
-        elipse(2.0, 1.0, 0.5,  0.0,  0,      2*M_PI, 0.5),
-        elipse(0.1, 0.2, 0.01, -0.01, M_PI/2, 3*M_PI/2),
-        elipse(0.1, 5.0, -2.0,  0.5, 0, 2*M_PI)
-    };
-
-    line lines[1] = {
-        line(0.0, -0.5) // A horizontal line at y = -0.5
-    };
+// define the equations of a line (for example, y - m*x - b = 0)
+double line_F (const double* p, double x, double y){ return y - p[0]*x + p[1]; } // p[0] = slope (m), p[1] = y-intercept (b)
+double line_dx(const double* p, double x, double y){ return -p[0]; } // derivative with respect to x
+double line_dy(const double* p, double x, double y){ return 1; } // derivative with respect to y
 
 
-    particle particles[3] = {
-        particle(-0.8, 0.0, 1.0, 0.5), // Particle 1
-        particle(0.0, -0.8, 1.0, 0.0), // Particle 2
-        particle(1.0, 2.0, -0.6, 0.0) // Particle 3
-    };
+int main(){
+    collisionableObject circle;
+    // circle:  p = {cx, cy, r}
+
+
+    circle.n = 3;       // number of parameters for the circle
+    circle.p[0] = 0;   // center x
+    circle.p[1] = 0;   // center y
+    circle.p[2] = 1;   // radius
+    circle.implicit_form = circle_F;
+    circle.dx = circle_dx;
+    circle.dy = circle_dy;
+
+    double x = 1.0, y = 1.0;  
+    printf("Testing circle at (%g, %g)\n", x, y);
+    printTest(circle, x, y);
+
+    collisionableObject line;
+    line.n = 2;       // number of parameters for the line
+    line.p[0] = -0.0;   // slope (m)
+    line.p[1] = 0.0;   // y-intercept (b)
+    line.implicit_form = line_F;
+    line.dx = line_dx;
+    line.dy = line_dy;
+
+    printf("\nTesting line at (%g, %g)\n", x, y);
+    printTest(line, x, y);
+
     
 
-    double t0 = 0.0;
-    double dt = 1e-5;
-    double tf = 100.0;
-    double t = t0;
-    int step = 0;
-    int strobe_interval = 0.01/dt;
 
-    
-
-    int n_particles = sizeof(particles) / sizeof(particles[0]);
-    int n_elipses   = sizeof(elipses)   / sizeof(elipses[0]);
-    int n_lines     = sizeof(lines)     / sizeof(lines[0]);
-
-    int n_rows_per_particle = (int)((tf - t0) / dt) / strobe_interval + 2;
-    // Buffer layout: particle i's x,y data starts at i * n_rows_per_particle * 2
-    double* buffer = (double*)malloc(n_particles * n_rows_per_particle * 2 * sizeof(double));
-    int buf_count  = 0; // same for all particles since dt/tf/t0 are shared
-
-    // Outer loop: each particle runs its full trajectory independently
-    for (int i = 0; i < n_particles; i++) {
-        t    = t0;
-        step = 0;
-        int p_count = 0;
-
-        while (t < tf) {
-            double old_x = particles[i].position.x;
-            double old_y = particles[i].position.y;
-
-            particles[i] = yoshida4Step(particles[i], dt);
-
-            for (int j = 0; j < n_elipses; j++)
-                if (elipses[j].handle_collision(particles[i], old_x, old_y)) break;
-
-            for (int j = 0; j < n_lines; j++)
-                if (lines[j].handle_collision(particles[i], old_x, old_y)) break;
-
-            if (step % strobe_interval == 0) {
-                int idx = i * n_rows_per_particle + p_count;
-                buffer[idx * 2]     = particles[i].position.x;
-                buffer[idx * 2 + 1] = particles[i].position.y;
-                p_count++;
-            }
-
-            t += dt;
-            step++;
-        }
-
-        if (i == 0) buf_count = p_count;
-    }
-
-    FILE* f = fopen("trajectories.csv", "w");
-    fprintf(f, "t");
-    for (int i = 0; i < n_particles; i++)
-        fprintf(f, ",x%d,y%d", i, i);
-    fprintf(f, "\n");
-    for (int r = 0; r < buf_count; r++) {
-        fprintf(f, "%.6f", t0 + r * strobe_interval * dt);
-        for (int i = 0; i < n_particles; i++) {
-            int idx = i * n_rows_per_particle + r;
-            fprintf(f, ",%.6f,%.6f", buffer[idx * 2], buffer[idx * 2 + 1]);
-        }
-        fprintf(f, "\n");
-    }
-    fclose(f);
-    free(buffer);
     return 0;
 }
