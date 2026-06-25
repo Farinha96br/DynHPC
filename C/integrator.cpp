@@ -27,14 +27,19 @@ struct vector2D {
     vector2D(double x, double y) : x(x), y(y) {}
 };
 
-struct particle {
+struct vector3D {
+    double x, y, z;
+    vector3D(double x, double y, double z) : x(x), y(y), z(z) {}
+};
+
+struct state {
     /*
-    Basic struct for particle with position and velocity and unit mass
+    Basic struct for state with position and velocity and unit mass
     */
     vector2D position;
     vector2D velocity;
     double mass = 1.0; // Assuming unit mass for simplicity
-    particle(double x, double y, double vx, double vy, double m = 1.0) : position(x, y), velocity(vx, vy), mass(m) {}
+    state(double x, double y, double vx, double vy, double m = 1.0) : position(x, y), velocity(vx, vy), mass(m) {}
 };
 
 
@@ -48,15 +53,15 @@ vector2D reflect(const vector2D& velocity, const vector2D& normal) {
     return vector2D(velocity.x - 2 * dot * normal.x, velocity.y - 2 * dot * normal.y);
 }
 
-particle eulerStep(const particle& p, const vector2D& force, double dt) {
+state eulerStep(const state& p, const vector2D& force, double dt) {
     // Update velocity based on force
     vector2D new_velocity(p.velocity.x + force.x * dt, p.velocity.y + force.y * dt);
     // Update position based on new velocity
     vector2D new_position(p.position.x + new_velocity.x * dt, p.position.y + new_velocity.y * dt);
-    return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
+    return state(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
-particle rk4Step(const particle& p, const vector2D& force, double dt) {
+state rk4Step(const state& p, const vector2D& force, double dt) {
     // For simplicity, we will assume the force is constant over the time step.
     vector2D k1_v = force;
     vector2D k1_p = p.velocity;
@@ -80,7 +85,7 @@ particle rk4Step(const particle& p, const vector2D& force, double dt) {
         p.position.y + (dt / 6.0) * (k1_p.y + 2 * k2_p.y + 2 * k3_p.y + k4_p.y)
     );
 
-    return particle(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
+    return state(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
 vector2D force_at_position(double x, double y) {
@@ -88,7 +93,7 @@ vector2D force_at_position(double x, double y) {
     return vector2D(0, -1);
 }
 
-particle yoshida4Step(const particle& p, double dt) {
+state yoshida4Step(const state& p, double dt) {
     const double cbrt2 = pow(2.0, 1.0/3.0);
     const double w1    = 1.0 / (2.0 - cbrt2);
     const double w0    = -cbrt2 * w1;
@@ -123,7 +128,7 @@ particle yoshida4Step(const particle& p, double dt) {
     double x4  = x3 + c1 * dt * vx3;
     double y4  = y3 + c1 * dt * vy3;
 
-    return particle(x4, y4, vx3, vy3, p.mass);
+    return state(x4, y4, vx3, vy3, p.mass);
 }
 
 
@@ -153,6 +158,69 @@ vector2D calculateNormal(const equationSet& obj, double x, double y) {
     return vector2D(dFdx / length, dFdy / length); // Normalize the normal vector
 }
 
+class CollisionableObject {
+public:
+    equationSet obj;
+    double restitution = 1.0; // Coefficient of restitution (1.0 for perfectly elastic collision)
+};
+
+
+
+state singleStep(state& p, const CollisionableObject* objs, int n_objs, double t, double dt, state (*integrator)(const state&, double)) {
+    /*
+    Advances p by dt using the given integrator, resolving at most one collision
+    (the earliest one across all objects). Any remaining time after the bounce is
+    advanced freely; subsequent collisions are caught in the next call.
+    */
+    state s_new = integrator(p, dt);
+
+    // Find the earliest collision among all objects
+    int    hit_idx = -1;
+    double dt_hit  = dt;
+    state  s_hit   = s_new;
+
+    for (int i = 0; i < n_objs; ++i) {
+        // loops through all objects
+        double F_old = objs[i].obj.implicit_form(objs[i].obj.p, p.position.x,     p.position.y);
+        double F_new = objs[i].obj.implicit_form(objs[i].obj.p, s_new.position.x, s_new.position.y);
+        
+        // if the sign changes the particle has crossed a surface
+        if (F_old * F_new >= 0.0) continue;
+
+        // process of smallification of the timestep
+        double dt_small = 0.0, dt_large = dt; 
+        state  s_surf = s_new;
+        for (int iter = 0; iter < 32; ++iter) {
+            // keep halving the timestep
+            double dt_mid = 0.5 * (dt_small + dt_large);
+            state  s_mid  = integrator(p, dt_mid);
+            double F_mid  = objs[i].obj.implicit_form(objs[i].obj.p, s_mid.position.x, s_mid.position.y);
+            if (F_old * F_mid < 0.0) { dt_large = dt_mid; s_surf = s_mid; }
+            else                      { dt_small = dt_mid; }
+        }
+
+        if (dt_large < dt_hit) { hit_idx = i; dt_hit = dt_large; s_hit = s_surf; }
+    }
+
+    if (hit_idx < 0) return s_new;
+
+    // Reflect velocity off the earliest-hit surface, apply restitution
+    vector2D normal = calculateNormal(objs[hit_idx].obj, s_hit.position.x, s_hit.position.y);
+    vector2D v_ref  = reflect(s_hit.velocity, normal);
+    state s_bounced(s_hit.position.x, s_hit.position.y,
+                    objs[hit_idx].restitution * v_ref.x,
+                    objs[hit_idx].restitution * v_ref.y,
+                    p.mass);
+
+    return integrator(s_bounced, dt - dt_hit);
+}
+
+
+
+
+
+
+
 
 
 
@@ -168,9 +236,7 @@ void printTest(const equationSet& obj, double x, double y) {
     
     bool inside = obj.implicit_form(obj.p, x, y) < 0;
     vector2D normal = calculateNormal(obj, x, y);
-    printf("obj: %s x,y: %g,%g, nx, ny: %g, %g, inside: %s\n", obj.name, x, y, normal.x, normal.y, inside ? "true" : "false");
-   
-    
+    printf("obj: %s x,y: %g,%g, nx, ny: %g, %g, inside: %s\n", obj.name, x, y, normal.x, normal.y, inside ? "true" : "false");   
 }
 
 
@@ -193,46 +259,46 @@ double sine_dy(const double* p, double x, double y){ return 1; }
 
 
 int main(){
-    // an equation set
-    equationSet objects[3];
-    // first one is a circle:
-    objects[0].name[0] = 'C'; objects[0].name[1] = 'i'; objects[0].name[2] = 'r'; objects[0].name[3] = 'c'; objects[0].name[4] = 'l'; objects[0].name[5] = 'e'; objects[0].name[6] = '\0';
-    objects[0].n = 3;       // number of parameters for the circle
-    objects[0].p[0] = 0;   // center x
-    objects[0].p[1] = 0;   // center y
-    objects[0].p[2] = 1;   // radius
-    objects[0].implicit_form = circle_F;
-    objects[0].dx = circle_dx;
-    objects[0].dy = circle_dy;
-    // second is a line:
-    objects[1].name[0] = 'L'; objects[1].name[1] = 'i'; objects[1].name[2] = 'n'; objects[1].name[3] = 'e'; objects[1].name[4] = '\0';
-    objects[1].n = 2;       // number of parameters for the line
-    objects[1].p[0] = 1;   // slope (m)
-    objects[1].p[1] = 0;   // y-intercept (b)
-    objects[1].implicit_form = line_F;
-    objects[1].dx = line_dx;
-    objects[1].dy = line_dy;
-    // third is a sine wave:
-    objects[2].name[0] = 'S'; objects[2].name[1] = 'i'; objects[2].name[2] = 'n'; objects[2].name[3] = 'e'; objects[2].name[4] = '\0';
-    objects[2].n = 3;       // number of parameters for the sine wave
-    objects[2].p[0] = 1;   // amplitude (A)
-    objects[2].p[1] = 2;   // wave number (k)
-    objects[2].p[2] = 0;   // phase (phi)
-    objects[2].implicit_form = sine_F;
-    objects[2].dx = sine_dx;
-    objects[2].dy = sine_dy;
+    const double dt      = 0.001;
+    const double t_end   = 1000.0;
+    const int    n_steps = (int)(t_end / dt);
 
-    // now test the loop and the positions:
-    for (double x = -2; x <= 2; x += 0.25) {
-        for (double y = -2; y <= 2; y += 0.25) {
+    // 3 particles inside the bounding circle, above the floor and sine wave
+    state ps[3] = {
+        state( 0.0,  2.0,  1.5,  0.0),
+        state(-1.5,  1.0, -1.0,  0.5),
+        state( 1.5,  2.0,  0.0,  0.5)
+    };
 
-            for (int i = 0; i < 3; ++i) {
-                printTest(objects[i], x, y);
-            }
+    // Collision objects — all restitution = 1 for energy conservation test
+    CollisionableObject cobjs[3];
+    cobjs[0].obj         = {"Circle", {0.0, 0.0, 4.0}, 3, circle_F, circle_dx, circle_dy};
+    cobjs[0].restitution = 1.0;
+    cobjs[1].obj         = {"Line",   {0.0, 2.0},      2, line_F,   line_dx,   line_dy};   // floor at y = -2
+    cobjs[1].restitution = 1.0;
+    cobjs[2].obj         = {"Sine",   {1.0, 1.0, 0.0}, 3, sine_F,   sine_dx,   sine_dy};   // y = sin(x)
+    cobjs[2].restitution = 1.0;
+
+    FILE* fout = fopen("trajectories.txt", "w");
+    fprintf(fout, "t,particle,x,y,vx,vy,energy\n");
+
+    // Outer loop over particles, inner loop over timesteps
+    for (int i = 0; i < 3; ++i) {
+        printf("Simulating particle %d\n", i);
+        for (int step = 0; step <= n_steps; ++step) {
+            double t = step * dt;
+            double vx = ps[i].velocity.x, vy = ps[i].velocity.y;
+            double y  = ps[i].position.y;
+            double E  = 0.5 * (vx*vx + vy*vy) + y;  // KE + PE  (g=1, mass=1)
+            fprintf(fout, "%.6f,%d,%.6f,%.6f,%.6f,%.6f,%.10f\n",
+                    t, i, ps[i].position.x, y, vx, vy, E);
+
+            if (step < n_steps)
+                ps[i] = singleStep(ps[i], cobjs, 3, t, dt, yoshida4Step);
         }
     }
 
-
-
-        return 0;
-    }
+    fclose(fout);
+    printf("Done. Wrote trajectories.txt\n");
+    return 0;
+}
