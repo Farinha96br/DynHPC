@@ -1,6 +1,5 @@
 
 #define MAX_PARAMS 10 // maximun number of parameters for the equations defining the collisionable objects
-#define MAX_
 
 
 #include <cmath>
@@ -11,7 +10,7 @@
 #include <random>
 /*
 compile with:
-    g++ -O2 -fopenmp -o integrator integrator2.cpp -lm
+    g++ -O2 -fopenmp -o integrator integrator.cpp -lm
 ran with:
     ./integrator
 
@@ -130,7 +129,9 @@ particle yoshida4Step(const particle& p, double dt) {
 
 
 
-struct collisionableObject {
+struct equationSet{
+    // struct to hold the equations defining a collisionable object
+    char name[64] = "dummyName";          // name of the object
     double p[MAX_PARAMS] = {};   // any length up to MAX, flat, no heap
     int    n = 0;                // how many are actually used
     double (*implicit_form)(const double*, double, double) = nullptr;
@@ -139,8 +140,10 @@ struct collisionableObject {
 };
 
 
-vector2D calculateNormal(const collisionableObject& obj, double x, double y) {
-    // Calculate the normal vector at point (x, y) on the surface defined by the implicit function
+vector2D calculateNormal(const equationSet& obj, double x, double y) {
+    /* Calculate the normal vector at point (x, y) on the surface defined by the implicit function
+    Compunting the normal on top of the line results in a normal OUTWARDS
+    */
     double dFdx = obj.dx(obj.p, x, y);
     double dFdy = obj.dy(obj.p, x, y);
     double length = std::sqrt(dFdx * dFdx + dFdy * dFdy);
@@ -155,19 +158,19 @@ vector2D calculateNormal(const collisionableObject& obj, double x, double y) {
 
 
 
-void printTest(const collisionableObject& obj, double x, double y) {
+
+
+
+
+
+void printTest(const equationSet& obj, double x, double y) {
     // Print the value of the implicit function at point (x, y)
-    vector2D normal = calculateNormal(obj, x, y);
-    double F = obj.implicit_form(obj.p, x, y);
-    if (F < 0) {
-        printf("Point (%g, %g) is inside (F = %g)\n", x, y, F);
-    } else if (F > 0) {
-        printf("Point (%g, %g) is outside  (F = %g)\n", x, y, F);
-    } else {
-        printf("Point (%g, %g) is on the surface (F = %g)\n", x, y, F);
-    }
     
-    printf("Normal at (%g, %g): (%g, %g)\n", x, y, normal.x, normal.y);
+    bool inside = obj.implicit_form(obj.p, x, y) < 0;
+    vector2D normal = calculateNormal(obj, x, y);
+    printf("obj: %s x,y: %g,%g, nx, ny: %g, %g, inside: %s\n", obj.name, x, y, normal.x, normal.y, inside ? "true" : "false");
+   
+    
 }
 
 
@@ -190,49 +193,46 @@ double sine_dy(const double* p, double x, double y){ return 1; }
 
 
 int main(){
-    collisionableObject circle;
-    // circle:  p = {cx, cy, r}
+    // an equation set
+    equationSet objects[3];
+    // first one is a circle:
+    objects[0].name[0] = 'C'; objects[0].name[1] = 'i'; objects[0].name[2] = 'r'; objects[0].name[3] = 'c'; objects[0].name[4] = 'l'; objects[0].name[5] = 'e'; objects[0].name[6] = '\0';
+    objects[0].n = 3;       // number of parameters for the circle
+    objects[0].p[0] = 0;   // center x
+    objects[0].p[1] = 0;   // center y
+    objects[0].p[2] = 1;   // radius
+    objects[0].implicit_form = circle_F;
+    objects[0].dx = circle_dx;
+    objects[0].dy = circle_dy;
+    // second is a line:
+    objects[1].name[0] = 'L'; objects[1].name[1] = 'i'; objects[1].name[2] = 'n'; objects[1].name[3] = 'e'; objects[1].name[4] = '\0';
+    objects[1].n = 2;       // number of parameters for the line
+    objects[1].p[0] = 1;   // slope (m)
+    objects[1].p[1] = 0;   // y-intercept (b)
+    objects[1].implicit_form = line_F;
+    objects[1].dx = line_dx;
+    objects[1].dy = line_dy;
+    // third is a sine wave:
+    objects[2].name[0] = 'S'; objects[2].name[1] = 'i'; objects[2].name[2] = 'n'; objects[2].name[3] = 'e'; objects[2].name[4] = '\0';
+    objects[2].n = 3;       // number of parameters for the sine wave
+    objects[2].p[0] = 1;   // amplitude (A)
+    objects[2].p[1] = 2;   // wave number (k)
+    objects[2].p[2] = 0;   // phase (phi)
+    objects[2].implicit_form = sine_F;
+    objects[2].dx = sine_dx;
+    objects[2].dy = sine_dy;
 
+    // now test the loop and the positions:
+    for (double x = -2; x <= 2; x += 0.25) {
+        for (double y = -2; y <= 2; y += 0.25) {
 
-    circle.n = 3;       // number of parameters for the circle
-    circle.p[0] = 0;   // center x
-    circle.p[1] = 0;   // center y
-    circle.p[2] = 1;   // radius
-    circle.implicit_form = circle_F;
-    circle.dx = circle_dx;
-    circle.dy = circle_dy;
-
-    double x = 0.0;
-    
-    for (double y = -1.5; y <= 1.5; y += 0.5) {
-    printf("===========\n");
-    
-    printf("Testing circle at (%g, %g)\n", x, y);
-    printTest(circle, x, y);
-
-    collisionableObject line;
-    line.n = 2;       // number of parameters for the line
-    line.p[0] = 0.5;   // slope (m)
-    line.p[1] = 0.0;   // y-intercept (b)
-    line.implicit_form = line_F;
-    line.dx = line_dx;
-    line.dy = line_dy;
-
-    printf("\nTesting line at (%g, %g)\n", x, y);
-    printTest(line, x, y);
-
-    collisionableObject sine;
-    sine.n = 3;       // number of parameters for the sine wave
-    sine.p[0] = 1.0;   // amplitude (A)
-    sine.p[1] = 1.0;   // wave number (k)
-    sine.p[2] = 0.0;   // phase (phi)
-    sine.implicit_form = sine_F;
-    sine.dx = sine_dx;
-    sine.dy = sine_dy;
-
-    printf("\nTesting sine wave at (%g, %g)\n", x, y);
-    printTest(sine, x, y);
+            for (int i = 0; i < 3; ++i) {
+                printTest(objects[i], x, y);
+            }
+        }
     }
 
-    return 0;
-}
+
+
+        return 0;
+    }
