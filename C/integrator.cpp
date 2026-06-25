@@ -1,5 +1,6 @@
 
 #define MAX_PARAMS 10 // maximun number of parameters for the equations defining the collisionable objects
+#define MAX_MASKS  8  // maximum number of no-collision masks per CollisionableObject
 
 
 #include <cmath>
@@ -7,7 +8,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <omp.h>
-#include <random>
+
 /*
 compile with:
     g++ -O2 -fopenmp -o integrator integrator.cpp -lm
@@ -88,12 +89,16 @@ state rk4Step(const state& p, const vector2D& force, double dt) {
     return state(new_position.x, new_position.y, new_velocity.x, new_velocity.y, p.mass);
 }
 
-vector2D force_at_position(double x, double y) {
+vector2D force_at_position(double x, double y, double t = 0.0) {
+    // swirl force: rotational force around the origin
 
-    return vector2D(0, -1);
+    double fx = 0.0; // Avoid division by zero
+    double fy = -1.0;
+
+    return vector2D(fx, fy);
 }
 
-state yoshida4Step(const state& p, double dt) {
+state yoshida4Step(const state& p, double t, double dt) {
     const double cbrt2 = pow(2.0, 1.0/3.0);
     const double w1    = 1.0 / (2.0 - cbrt2);
     const double w0    = -cbrt2 * w1;
@@ -103,24 +108,24 @@ state yoshida4Step(const state& p, double dt) {
     const double d1 = w1;
     const double d2 = w0;
 
-    // Sub-step 1 — position drift, then velocity kick at new position
+    // Sub-step 1 — position drift, then velocity kick; kick time = t + c1*dt
     double x1  = p.position.x + c1 * dt * p.velocity.x;
     double y1  = p.position.y + c1 * dt * p.velocity.y;
-    vector2D f1 = force_at_position(x1, y1);
+    vector2D f1 = force_at_position(x1, y1, t + c1 * dt);
     double vx1 = p.velocity.x + d1 * dt * f1.x;
     double vy1 = p.velocity.y + d1 * dt * f1.y;
 
-    // Sub-step 2 — position drift, then velocity kick at new position
+    // Sub-step 2 — position drift, then velocity kick; kick time = t + (c1+c2)*dt
     double x2  = x1 + c2 * dt * vx1;
     double y2  = y1 + c2 * dt * vy1;
-    vector2D f2 = force_at_position(x2, y2);
+    vector2D f2 = force_at_position(x2, y2, t + (c1 + c2) * dt);
     double vx2 = vx1 + d2 * dt * f2.x;
     double vy2 = vy1 + d2 * dt * f2.y;
 
-    // Sub-step 3 — position drift, then velocity kick at new position (c3=c2, d3=d1)
+    // Sub-step 3 — position drift, then velocity kick; kick time = t + (c1+2*c2)*dt
     double x3  = x2 + c2 * dt * vx2;
     double y3  = y2 + c2 * dt * vy2;
-    vector2D f3 = force_at_position(x3, y3);
+    vector2D f3 = force_at_position(x3, y3, t + (c1 + 2*c2) * dt);
     double vx3 = vx2 + d1 * dt * f3.x;
     double vy3 = vy2 + d1 * dt * f3.y;
 
@@ -158,21 +163,29 @@ vector2D calculateNormal(const equationSet& obj, double x, double y) {
     return vector2D(dFdx / length, dFdy / length); // Normalize the normal vector
 }
 
+struct mask {
+    // A no-collision region: collision is suppressed where F(p, x, y) < 0.
+    double (*F)(const double*, double, double) = nullptr;
+    double p[MAX_PARAMS] = {};
+};
+
 class CollisionableObject {
 public:
     equationSet obj;
-    double restitution = 1.0; // Coefficient of restitution (1.0 for perfectly elastic collision)
+    double restitution = 1.0;
+    mask   masks[MAX_MASKS];  // no-collision regions (holes in the surface)
+    int    n_masks = 0;
 };
 
 
 
-state singleStep(state& p, const CollisionableObject* objs, int n_objs, double t, double dt, state (*integrator)(const state&, double)) {
+state singleStep(state& p, const CollisionableObject* objs, int n_objs, double t, double dt, state (*integrator)(const state&, double, double)) {
     /*
     Advances p by dt using the given integrator, resolving at most one collision
     (the earliest one across all objects). Any remaining time after the bounce is
     advanced freely; subsequent collisions are caught in the next call.
     */
-    state s_new = integrator(p, dt);
+    state s_new = integrator(p, t, dt);
 
     // Find the earliest collision among all objects
     int    hit_idx = -1;
@@ -183,21 +196,28 @@ state singleStep(state& p, const CollisionableObject* objs, int n_objs, double t
         // loops through all objects
         double F_old = objs[i].obj.implicit_form(objs[i].obj.p, p.position.x,     p.position.y);
         double F_new = objs[i].obj.implicit_form(objs[i].obj.p, s_new.position.x, s_new.position.y);
-        
+
         // if the sign changes the particle has crossed a surface
         if (F_old * F_new >= 0.0) continue;
 
         // process of smallification of the timestep
-        double dt_small = 0.0, dt_large = dt; 
+        double dt_small = 0.0, dt_large = dt;
         state  s_surf = s_new;
         for (int iter = 0; iter < 32; ++iter) {
             // keep halving the timestep
             double dt_mid = 0.5 * (dt_small + dt_large);
-            state  s_mid  = integrator(p, dt_mid);
+            state  s_mid  = integrator(p, t, dt_mid);
             double F_mid  = objs[i].obj.implicit_form(objs[i].obj.p, s_mid.position.x, s_mid.position.y);
             if (F_old * F_mid < 0.0) { dt_large = dt_mid; s_surf = s_mid; }
             else                      { dt_small = dt_mid; }
         }
+
+        // Suppress collision if the impact point is inside any no-collision mask
+        bool masked = false;
+        for (int m = 0; m < objs[i].n_masks && !masked; ++m)
+            if (objs[i].masks[m].F(objs[i].masks[m].p, s_surf.position.x, s_surf.position.y) < 0.0)
+                masked = true;
+        if (masked) continue;
 
         if (dt_large < dt_hit) { hit_idx = i; dt_hit = dt_large; s_hit = s_surf; }
     }
@@ -212,7 +232,7 @@ state singleStep(state& p, const CollisionableObject* objs, int n_objs, double t
                     objs[hit_idx].restitution * v_ref.y,
                     p.mass);
 
-    return integrator(s_bounced, dt - dt_hit);
+    return integrator(s_bounced, t + dt_hit, dt - dt_hit);
 }
 
 
@@ -255,29 +275,46 @@ double sine_F (const double* p, double x, double y){ return y - p[0]*sin(p[1]*x 
 double sine_dx(const double* p, double x, double y){ return -p[0]*p[1]*cos(p[1]*x + p[2]); }
 double sine_dy(const double* p, double x, double y){ return 1; }
 
+// Half-plane masks for suppressing one side of a vertical line x = p[0]
+// F < 0 on the side that is suppressed
+double mask_right_F(const double* p, double x, double y){ return p[0] - x; } // F < 0 when x > p[0] → suppresses right side
+double mask_left_F (const double* p, double x, double y){ return x - p[0]; } // F < 0 when x < p[0] → suppresses left side
+
 
 
 
 int main(){
-    const double dt      = 0.001;
-    const double t_end   = 1000.0;
+    const double dt      = 1e-5;
+    const double t_end   = 10.0;
     const int    n_steps = (int)(t_end / dt);
 
     // 3 particles inside the bounding circle, above the floor and sine wave
     state ps[3] = {
-        state( 0.0,  2.0,  1.5,  0.0),
-        state(-1.5,  1.0, -1.0,  0.5),
-        state( 1.5,  2.0,  0.0,  0.5)
+        state( 0.0,  2.0,  1.5,  1.0),
+        state(-1.5,  1.0, -1.0,  1.5),
+        state( 1.5,  2.0,  100.0,  2.5)
     };
 
     // Collision objects — all restitution = 1 for energy conservation test
-    CollisionableObject cobjs[3];
-    cobjs[0].obj         = {"Circle", {0.0, 0.0, 4.0}, 3, circle_F, circle_dx, circle_dy};
+    CollisionableObject cobjs[5];
+    cobjs[0].obj         = {"Circle",    {0.0,  0.0, 4.0}, 3, circle_F, circle_dx, circle_dy};
     cobjs[0].restitution = 1.0;
-    cobjs[1].obj         = {"Line",   {0.0, 2.0},      2, line_F,   line_dx,   line_dy};   // floor at y = -2
+    cobjs[1].obj         = {"Line",      {0.0,  2.0},      2, line_F,   line_dx,   line_dy};   // floor at y = -2
     cobjs[1].restitution = 1.0;
-    cobjs[2].obj         = {"Sine",   {1.0, 1.0, 0.0}, 3, sine_F,   sine_dx,   sine_dy};   // y = sin(x)
+    cobjs[2].obj         = {"Sine",      {1.0,  1.0, 0.0}, 3, sine_F,   sine_dx,   sine_dy};   // y = sin(x)
     cobjs[2].restitution = 1.0;
+    // Small circle — only LEFT side collisionable; right side (x > cx) is masked
+    cobjs[3].obj            = {"LeftOnly",  {-1.5, 2.5, 0.5}, 3, circle_F, circle_dx, circle_dy};
+    cobjs[3].restitution    = 1.0;
+    cobjs[3].masks[0].F     = mask_right_F;  // F < 0 when x > -1.5 → suppresses right side
+    cobjs[3].masks[0].p[0]  = -1.5;
+    cobjs[3].n_masks        = 1;
+    // Small circle — only RIGHT side collisionable; left side (x < cx) is masked
+    cobjs[4].obj            = {"RightOnly", { 1.5, 2.5, 0.5}, 3, circle_F, circle_dx, circle_dy};
+    cobjs[4].restitution    = 1.0;
+    cobjs[4].masks[0].F     = mask_left_F;   // F < 0 when x < 1.5 → suppresses left side
+    cobjs[4].masks[0].p[0]  = 1.5;
+    cobjs[4].n_masks        = 1;
 
     FILE* fout = fopen("trajectories.txt", "w");
     fprintf(fout, "t,particle,x,y,vx,vy,energy\n");
@@ -289,12 +326,15 @@ int main(){
             double t = step * dt;
             double vx = ps[i].velocity.x, vy = ps[i].velocity.y;
             double y  = ps[i].position.y;
-            double E  = 0.5 * (vx*vx + vy*vy) + y;  // KE + PE  (g=1, mass=1)
+            // Total energy = kinetic + potential. For the current force field
+            // force = (0, -1) = -grad V => dV/dy = 1 => V = y (up to constant)
+            double V  = ps[i].position.y;
+            double E  = 0.5 * (vx*vx + vy*vy) + V;
             fprintf(fout, "%.6f,%d,%.6f,%.6f,%.6f,%.6f,%.10f\n",
                     t, i, ps[i].position.x, y, vx, vy, E);
 
             if (step < n_steps)
-                ps[i] = singleStep(ps[i], cobjs, 3, t, dt, yoshida4Step);
+                ps[i] = singleStep(ps[i], cobjs, 5, t, dt, yoshida4Step);
         }
     }
 
