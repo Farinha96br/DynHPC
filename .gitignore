@@ -31,4 +31,9 @@ exploration/
 .DS_Store
 Thumbs.db
 
+# data
+*.csv
+*.json
+*.log
+
 
