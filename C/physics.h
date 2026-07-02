@@ -83,3 +83,4 @@ state singleStep(const state& p, const CollisionableObject* objs, int n_objs, do
 
     return yoshida4Step(s_bounced, dt - dt_hit);
 }
+
