@@ -1,13 +1,12 @@
 
-// The same per-particle loop body is compiled for two backends:
-//   -DGPU_OFFLOAD → OpenMP target offload, one GPU thread per particle
-//   (default)     → OpenMP multi-threading on the CPU
+// integrator_sample_gpu.cpp — GPU version: OpenMP target offload,
+// one GPU thread per particle. CPU version: integrator_sample_cpu.cpp.
 
 #define MAX_PARAMS 10   // max parameters per shape / mask
 #define MAX_MASKS   8   // max no-collision masks per CollisionableObject
 
 
-// host-only libs
+// load basic libs (host-only)
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -24,14 +23,15 @@
 #include "cpuUtils.h"   // host-only debug helpers
 
 /*
-compile (CPU, multi-threaded):
-    g++ -O2 -fopenmp -o integrator integrator.cpp -lm
-compile (GPU — NVIDIA via NVHPC nvc++):
-    nvc++ -O2 -mp=gpu -DGPU_OFFLOAD -o integrator integrator.cpp
-compile (GPU — NVIDIA via GCC/Clang):
-    g++ -O2 -fopenmp -fopenmp-targets=nvptx64 -DGPU_OFFLOAD -o integrator integrator.cpp -lm
+compile (NVIDIA via NVHPC nvc++):
+    nvc++ -O2 -mp=gpu -gpu=ccnative -o GPUbuild integrator_sample_gpu.cpp -lm
+compile (NVIDIA via GCC/Clang):
+    g++ -O2 -fopenmp -fopenmp-targets=nvptx64 -o GPUbuild integrator_sample_gpu.cpp -lm
 run:
-    ./integrator
+    ./GPUbuild
+
+GPU note: OpenMP offloading does not support function pointer types on device.
+Shape dispatch uses integer IDs + switch (see thisTable.h).
 */
 
 
@@ -83,7 +83,7 @@ int main() {
 
     // ── simulation ─────────────────────────────────────────────────────────────
     // Particles never interact, so each one runs its whole time loop
-    // independently — one GPU thread (or CPU thread) per particle.
+    // independently — one GPU thread per particle.
     //
     // Per fine step, collisions are handled explicitly here in the loop:
     //   1. integrate:  s_new  = singleStep(p, dt)          (Yoshida 4, no collisions)
@@ -92,10 +92,8 @@ int main() {
     //                  the remaining dt - dt_hit from the bounced state
     // At most one bounce per dt is handled (change `if` to `while` for multi-bounce).
 
-// if using the GPU
-#ifdef GPU_OFFLOAD
     // target data: upload objects + initial states once (to), download the
-    // finished trajectory buffer once when the region ends (from)
+    // finished trajectory buffer once when the region ends (from) —
     // no host↔device traffic inside the time loop.
     #pragma omp target data map(to: cobjs[0:5], ps[0:N_P]) \
                             map(from: traj[0:N_P * N_TRAJ * 2])
@@ -121,29 +119,6 @@ int main() {
             }
         }
     }
-
-// if using the CPU
-#else
-    #pragma omp parallel for
-    for (int i = 0; i < N_P; ++i) {
-        state p = ps[i];
-        for (int t = 0; t < N_TRAJ; ++t) {                     // waypoint loop
-            for (int s = 0; s < N_TRAJ_STRIDE; ++s) {          // fine steps between waypoints
-                state s_new = singleStep(p, dt);                                       // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt);      // 2. detect
-                if (ev.obj_idx >= 0) {
-                    state s_bounced = resolveCollision(ev, cobjs[ev.obj_idx], p.mass); // 3. resolve
-                    s_new = singleStep(s_bounced, dt - ev.dt_hit);                     //    + finish the step
-                }
-                p = s_new;
-            }
-            // record waypoint t of particle i
-            long long tidx = ((long long)i * N_TRAJ + t) * 2;
-            traj[tidx + 0] = p.position.x;
-            traj[tidx + 1] = p.position.y;
-        }
-    }
-#endif
 
     // ── write trajectories ────────────────────────────────────────────────────
     // CSV, one row per waypoint: particle index, x, y (read by plot_traj.py)
