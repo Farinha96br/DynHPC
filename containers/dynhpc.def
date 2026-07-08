@@ -1,0 +1,51 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%post
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        g++-13 \
+        gcc-13-offload-nvptx \
+        libgomp-plugin-nvptx1 \
+        nvptx-tools \
+        ca-certificates \
+        curl \
+        gnupg
+    # make g++ point to gcc-13
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+    # NVIDIA HPC SDK (nvc++), for native OpenMP/OpenACC GPU offload
+    curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK \
+        | gpg --dearmor -o /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
+    echo 'deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /' \
+        > /etc/apt/sources.list.d/nvhpc.list
+    apt-get update -y
+    # prefer the cuda-multi package: it bundles device code for several CUDA
+    # toolkit versions (currently 13.x + 12.9) so the container isn't pinned
+    # to one exact minor version of the host's CUDA 13 driver
+    NVHPC_PKG=$(apt-cache search '^nvhpc-[0-9].*-cuda-multi$' | sort -V | tail -n1 | cut -d' ' -f1)
+    if [ -z "$NVHPC_PKG" ]; then
+        NVHPC_PKG=$(apt-cache search '^nvhpc-[0-9]' | grep -v cuda-multi | sort -V | tail -n1 | cut -d' ' -f1)
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$NVHPC_PKG"
+
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    export LC_ALL=C
+    export NVHPC_ROOT=$(ls -d /opt/nvidia/hpc_sdk/Linux_x86_64/*/ 2>/dev/null | sort -V | tail -n1)
+    export PATH="${NVHPC_ROOT}compilers/bin:$PATH"
+    export LD_LIBRARY_PATH="${NVHPC_ROOT}compilers/lib:${NVHPC_ROOT}cuda/lib64:${LD_LIBRARY_PATH:-}"
+
+%help
+    Build:
+        apptainer build dynhpc.sif dynhpc.def
+
+    Run/exec (must pass --nv to expose the host NVIDIA driver + GPU for
+    OpenMP device offload; the container does not bundle a GPU driver):
+        apptainer shell --nv dynhpc.sif
+        apptainer exec --nv dynhpc.sif bash compileAndRun.sh integrator_sample.cpp
+
+
+
