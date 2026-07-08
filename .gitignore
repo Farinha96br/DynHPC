@@ -36,4 +36,6 @@ Thumbs.db
 *.json
 *.log
 
+# containers
+*.sif
 
