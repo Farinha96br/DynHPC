@@ -35,6 +35,13 @@ and add one case to each of eval_F / eval_dx / eval_dy.
 */
 
 
+
+
+
+
+
+
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -78,13 +85,19 @@ int main() {
     #pragma omp target data map(to: cobjs[0:5], ps[0:N_P]) \
                             map(from: traj[0:N_P * N_TRAJ * 2])
     {
-        #pragma omp target teams distribute parallel for \
-                num_teams((N_P + 255) / 256) thread_limit(256)
+        #pragma omp target teams distribute parallel for
         for (int i = 0; i < N_P; ++i) {
             state p = ps[i];
             for (int t = 0; t < N_TRAJ; ++t) {
-                for (int s = 0; s < N_TRAJ_STRIDE; ++s)
-                    p = singleStep(p, cobjs, 5, dt);
+                for (int s = 0; s < N_TRAJ_STRIDE; ++s) {
+                    state s_new = singleStep(p, dt);
+                    collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt);
+                    if (ev.obj_idx >= 0) {
+                        state s_bounced = resolveCollision(ev, cobjs[ev.obj_idx], p.mass);
+                        s_new = singleStep(s_bounced, dt - ev.dt_hit);
+                    }
+                    p = s_new;
+                }
                 long long tidx = ((long long)i * N_TRAJ + t) * 2;
                 traj[tidx + 0] = p.position.x;
                 traj[tidx + 1] = p.position.y;
@@ -96,10 +109,19 @@ int main() {
 #else
     #pragma omp parallel for
     for (int i = 0; i < N_P; ++i) {
-        state p = ps[i];
+        state p = ps[i]; // initialize all particles from the list generated first
+        // time loop, with N_TRAJ evenly spaced times
         for (int t = 0; t < N_TRAJ; ++t) {
-            for (int s = 0; s < N_TRAJ_STRIDE; ++s)
-                p = singleStep(p, cobjs, 5, dt);
+            
+            for (int s = 0; s < N_TRAJ_STRIDE; ++s) {
+                state s_new = singleStep(p, dt);
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt);
+                if (ev.obj_idx >= 0) {
+                    state s_bounced = resolveCollision(ev, cobjs[ev.obj_idx], p.mass);
+                    s_new = singleStep(s_bounced, dt - ev.dt_hit);
+                }
+                p = s_new;
+            }
             long long tidx = ((long long)i * N_TRAJ + t) * 2;
             traj[tidx + 0] = p.position.x;
             traj[tidx + 1] = p.position.y;
