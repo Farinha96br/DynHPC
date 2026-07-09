@@ -34,6 +34,20 @@ struct equationSet {
     int    shape_id      = -1;
 };
 
+struct collisionEvent {
+    /*
+    Result of collision detection over one time step, where:
+    obj_idx: index into the objects array; -1 = no collision
+    dt_hit: time-of-impact within the step
+    s_hit: integrated state at the surface
+    */
+    int    obj_idx;
+    double dt_hit;
+    state  s_hit;
+    collisionEvent(int idx, double dth, const state& s)
+        : obj_idx(idx), dt_hit(dth), s_hit(s) {}
+};
+
 struct mask {
     /*
     Define a mask, where:

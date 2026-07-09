@@ -1,6 +1,9 @@
 // file related to physics. Such as time integration methods.
 
+
+
 vector2D force_at_position(double x, double y) {
+    
     return vector2D(0.0, -1.0);
 }
 
@@ -19,7 +22,8 @@ vector2D calculateNormal(const equationSet& obj, double x, double y) {
 
 
 state yoshida4Step(const state& p, double dt) {
-    const double cbrt2 = pow(2.0, 1.0/3.0);
+    //const double cbrt2 = pow(2.0, 1.0/3.0);
+    const double cbrt2 = 1.2599210498948731648; // hard-coded to avoid pow() call
     const double w1    = 1.0 / (2.0 - cbrt2);
     const double w0    = -cbrt2 * w1;
     const double c1 = w1/2.0, c2 = (w0+w1)/2.0, d1 = w1, d2 = w0;
@@ -41,12 +45,16 @@ state yoshida4Step(const state& p, double dt) {
     return state(x4, y4, vx3, vy3, p.mass);
 }
 
-state singleStep(const state& p, const CollisionableObject* objs, int n_objs, double dt) {
-    state s_new = yoshida4Step(p, dt);
+// advance one time step, ignoring collisions (encapsulates integrator choice)
+state singleStep(const state& p, double dt) {
+    return yoshida4Step(p, dt);
+}
 
-    int    hit_idx = -1;
-    double dt_hit  = dt;
-    state  s_hit   = s_new;
+// find the earliest surface crossing between p and s_new = singleStep(p, dt);
+// obj_idx = -1 when nothing (unmasked) was hit
+collisionEvent detectFirstCollision(const state& p, const state& s_new,
+                                    const CollisionableObject* objs, int n_objs, double dt) {
+    collisionEvent ev(-1, dt, s_new);
 
     for (int i = 0; i < n_objs; ++i) {
         double F_old = eval_F(objs[i].obj.shape_id, objs[i].obj.p, p.position.x,     p.position.y);
@@ -57,7 +65,7 @@ state singleStep(const state& p, const CollisionableObject* objs, int n_objs, do
         state  s_surf = s_new;
         for (int iter = 0; iter < 32; ++iter) {
             double dt_mid = 0.5*(dt_small + dt_large);
-            state  s_mid  = yoshida4Step(p, dt_mid);
+            state  s_mid  = singleStep(p, dt_mid);
             double F_mid  = eval_F(objs[i].obj.shape_id, objs[i].obj.p, s_mid.position.x, s_mid.position.y);
             if (F_old * F_mid < 0.0) { dt_large = dt_mid; s_surf = s_mid; }
             else                      { dt_small = dt_mid; }
@@ -69,18 +77,19 @@ state singleStep(const state& p, const CollisionableObject* objs, int n_objs, do
                 masked = true;
         if (masked) continue;
 
-        if (dt_large < dt_hit) { hit_idx = i; dt_hit = dt_large; s_hit = s_surf; }
+        if (dt_large < ev.dt_hit) { ev.obj_idx = i; ev.dt_hit = dt_large; ev.s_hit = s_surf; }
     }
 
-    if (hit_idx < 0) return s_new;
-
-    vector2D normal = calculateNormal(objs[hit_idx].obj, s_hit.position.x, s_hit.position.y);
-    vector2D v_ref  = reflect(s_hit.velocity, normal);
-    state s_bounced(s_hit.position.x, s_hit.position.y,
-                    objs[hit_idx].restitution * v_ref.x,
-                    objs[hit_idx].restitution * v_ref.y,
-                    p.mass);
-
-    return yoshida4Step(s_bounced, dt - dt_hit);
+    return ev;
 }
 
+// reflect the velocity at the surface (with restitution); returns the bounced
+// state at the impact point — integrating the remaining time is the caller's job
+state resolveCollision(const collisionEvent& ev, const CollisionableObject& obj, double mass) {
+    vector2D normal = calculateNormal(obj.obj, ev.s_hit.position.x, ev.s_hit.position.y);
+    vector2D v_ref  = reflect(ev.s_hit.velocity, normal);
+    return state(ev.s_hit.position.x, ev.s_hit.position.y,
+                 obj.restitution * v_ref.x,
+                 obj.restitution * v_ref.y,
+                 mass);
+}
