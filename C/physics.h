@@ -1,5 +1,10 @@
 // file related to physics. Such as time integration methods.
 
+// upper bound on collisions handled within one time step (fixed cap → GPU-safe);
+// when exhausted the particle is rest-clamped on the legal side, so dropping the
+// residual step time is safe
+#define MAX_BOUNCES_PER_STEP 1
+
 
 
 vector2D force_at_position(double x, double y) {
@@ -51,7 +56,10 @@ state singleStep(const state& p, double dt) {
 }
 
 // find the earliest surface crossing between p and s_new = singleStep(p, dt);
-// obj_idx = -1 when nothing (unmasked) was hit
+// obj_idx = -1 when nothing (unmasked) was hit.
+// The returned s_hit is the NEAR-side state: the last integrated state that has
+// NOT yet crossed the surface. Bouncing from there keeps the particle on the
+// legal side for any restitution — it can never be marooned inside/behind a wall.
 collisionEvent detectFirstCollision(const state& p, const state& s_new,
                                     const CollisionableObject* objs, int n_objs, double dt) {
     collisionEvent ev(-1, dt, s_new);
@@ -62,13 +70,23 @@ collisionEvent detectFirstCollision(const state& p, const state& s_new,
         if (F_old * F_new >= 0.0) continue;
 
         double dt_small = 0.0, dt_large = dt;
-        state  s_surf = s_new;
-        for (int iter = 0; iter < 32; ++iter) {
-            double dt_mid = 0.5*(dt_small + dt_large);
-            state  s_mid  = singleStep(p, dt_mid);
-            double F_mid  = eval_F(objs[i].obj.shape_id, objs[i].obj.p, s_mid.position.x, s_mid.position.y);
-            if (F_old * F_mid < 0.0) { dt_large = dt_mid; s_surf = s_mid; }
-            else                      { dt_small = dt_mid; }
+        state  s_before = p;      // near side (not yet crossed)
+        state  s_surf   = s_new;  // far side (crossed) — used only for the mask test
+        if (fabs(F_old) <= 1e-8 * fabs(F_new - F_old)) {
+            // contact at step start: the particle already touches the surface
+            // (resting/sliding). Impact = the start state itself; skipping the
+            // bisection keeps resting particles ~free instead of 32× a step.
+            s_surf = p;
+        } else {
+            for (int iter = 0; iter < 32; ++iter) {
+                double dt_mid = 0.5*(dt_small + dt_large);
+                state  s_mid  = singleStep(p, dt_mid);
+                double F_mid  = eval_F(objs[i].obj.shape_id, objs[i].obj.p, s_mid.position.x, s_mid.position.y);
+                // F_mid == 0 counts as crossed, so s_before always keeps a strictly
+                // legal-sign F — an exact-zero F would blind the next step's detection
+                if (F_old * F_mid < 0.0 || F_mid == 0.0) { dt_large = dt_mid; s_surf   = s_mid; }
+                else                                      { dt_small = dt_mid; s_before = s_mid; }
+            }
         }
 
         bool masked = false;
@@ -77,19 +95,28 @@ collisionEvent detectFirstCollision(const state& p, const state& s_new,
                 masked = true;
         if (masked) continue;
 
-        if (dt_large < ev.dt_hit) { ev.obj_idx = i; ev.dt_hit = dt_large; ev.s_hit = s_surf; }
+        if (dt_small < ev.dt_hit) { ev.obj_idx = i; ev.dt_hit = dt_small; ev.s_hit = s_before; }
     }
 
     return ev;
 }
 
 // reflect the velocity at the surface (with restitution); returns the bounced
-// state at the impact point — integrating the remaining time is the caller's job
-state resolveCollision(const collisionEvent& ev, const CollisionableObject& obj, double mass) {
+// state at the impact point — integrating the remaining time is the caller's job.
+// Resting contact: if the outgoing normal speed is too small to outrun the local
+// force for even ~2 steps of size dt, it is zeroed (tangential part kept) — the
+// particle rests/slides on the surface instead of micro-bouncing forever (Zeno).
+state resolveCollision(const collisionEvent& ev, const CollisionableObject& obj,
+                       double mass, double dt) {
     vector2D normal = calculateNormal(obj.obj, ev.s_hit.position.x, ev.s_hit.position.y);
     vector2D v_ref  = reflect(ev.s_hit.velocity, normal);
-    return state(ev.s_hit.position.x, ev.s_hit.position.y,
-                 obj.restitution * v_ref.x,
-                 obj.restitution * v_ref.y,
-                 mass);
+    double vx = obj.restitution * v_ref.x;
+    double vy = obj.restitution * v_ref.y;
+
+    vector2D f     = force_at_position(ev.s_hit.position.x, ev.s_hit.position.y);
+    double   v_esc = 2.0 * sqrt(f.x*f.x + f.y*f.y) * dt;
+    double   vn    = vx*normal.x + vy*normal.y;   // outgoing normal speed (normal points to the legal side)
+    if (vn < v_esc) { vx -= vn*normal.x; vy -= vn*normal.y; }
+
+    return state(ev.s_hit.position.x, ev.s_hit.position.y, vx, vy, mass);
 }
