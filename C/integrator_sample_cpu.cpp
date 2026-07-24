@@ -1,6 +1,9 @@
 
 // integrator_sample_cpu.cpp — CPU version: OpenMP multi-threading,
 // one CPU thread per particle. GPU version: integrator_sample_gpu.cpp.
+//
+// Simulation only, no I/O: particles are advanced from t = 0 to t_end and
+// their final states are left in ps[].
 
 #define MAX_PARAMS 10   // max parameters per shape / mask
 #define MAX_MASKS   8   // max no-collision masks per CollisionableObject
@@ -8,16 +11,13 @@
 
 // load basic libs
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <omp.h>
 
 // simulation headers (shared with the GPU version)
 #include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
-#include "thisTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
+#include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
-
-#include "cpuUtils.h"   // host-only debug helpers
 
 /*
 compile:
@@ -32,10 +32,9 @@ run:
 
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
-    const double dt      = 1e-4;               // integration time step
-    const double t_end   = 100.0;              // total simulated time
-    const int    n_steps = (int)(t_end / dt);  // 1 000 000 steps per particle
-    const int    N_P     = 200;                // number of particles
+    const double dt    = 1e-4;   // integration time step
+    const double t_end = 1.0;    // total simulated time
+    const int    N_P   = 200;    // number of particles
 
     // ── random initial conditions (reproducible seed) ──────────────────────────
     srand(42);
@@ -66,57 +65,37 @@ int main() {
     cobjs[4].obj = {"RightOnly", 3, { 1.5, 2.5, 0.5}, 0};  cobjs[4].restitution = 1.0;  // circle at (1.5,2.5), r=0.5 ...
     cobjs[4].masks[0] = {1, { 1.5}};  cobjs[4].n_masks = 1;                             // ... collides on its right half only (masked for x < 1.5)
 
-    // ── trajectory buffer: N_TRAJ waypoints evenly spaced through the run ────────
-    // Positions are recorded every N_TRAJ_STRIDE steps (not every step) to keep
-    // the output small. Flat layout: traj[(particle * N_TRAJ + waypoint) * 2] = {x, y}.
-    const int N_TRAJ        = 500;
-    const int N_TRAJ_STRIDE = n_steps / N_TRAJ;
-    double*   traj = new double[(long long)N_P * N_TRAJ * 2]();
-
     // ── simulation ─────────────────────────────────────────────────────────────
     // Particles never interact, so each one runs its whole time loop
     // independently — one CPU thread per particle.
     //
-    // Per fine step, collisions are handled explicitly here in the loop:
-    //   1. integrate:  s_new  = singleStep(p, dt)          (Yoshida 4, no collisions)
-    //   2. detect:     did the path p → s_new cross a surface? (earliest hit wins)
-    //   3. resolve:    reflect velocity at the impact point, then integrate
-    //                  the remaining dt - dt_hit from the bounced state
-    // At most one bounce per dt is handled (change `if` to `while` for multi-bounce).
+    // Per time step, collisions are handled explicitly here in the loop:
+    //   1. integrate:  s_new  = singleStep(p, dt_left)      (Yoshida 4, no collisions)
+    //   2. detect:     did the path p → s_new cross a surface? (earliest hit wins;
+    //                  the returned impact state is on the NEAR side of the surface)
+    //   3. resolve:    reflect velocity at the impact point (restitution applied;
+    //                  near-zero normal speed is clamped → resting/sliding contact)
+    // then continue with the remaining dt_left, up to MAX_BOUNCES_PER_STEP contacts.
     #pragma omp parallel for
     for (int i = 0; i < N_P; ++i) {
-        state p = ps[i];
-        for (int t = 0; t < N_TRAJ; ++t) {                     // waypoint loop
-            for (int s = 0; s < N_TRAJ_STRIDE; ++s) {          // fine steps between waypoints
-                state s_new = singleStep(p, dt);                                       // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt);      // 2. detect
-                if (ev.obj_idx >= 0) {
-                    state s_bounced = resolveCollision(ev, cobjs[ev.obj_idx], p.mass); // 3. resolve
-                    s_new = singleStep(s_bounced, dt - ev.dt_hit);                     //    + finish the step
-                }
-                p = s_new;
+        state  p = ps[i];
+        double t = 0.0;   // elapsed simulated time of particle i
+        while (t < t_end) {                                    // time loop
+            double dt_left = dt;
+            for (int b = 0; b < MAX_BOUNCES_PER_STEP; ++b) {
+                state s_new = singleStep(p, dt_left);                                  // 1. integrate
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt_left); // 2. detect
+                if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
+                // ── collision event hook: per-collision logic goes here ──
+                p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
+                dt_left -= ev.dt_hit;
+                if (dt_left <= 0.0) break;
             }
-            // record waypoint t of particle i
-            long long tidx = ((long long)i * N_TRAJ + t) * 2;
-            traj[tidx + 0] = p.position.x;
-            traj[tidx + 1] = p.position.y;
+            t += dt;
         }
+        ps[i] = p;   // final state
     }
-
-    // ── write trajectories ────────────────────────────────────────────────────
-    // CSV, one row per waypoint: particle index, x, y (read by plot_traj.py)
-    FILE* fout = fopen("trajectories.txt", "w");
-    fprintf(fout, "particle,x,y\n");
-    for (int i = 0; i < N_P; ++i) {
-        for (int t = 0; t < N_TRAJ; ++t) {
-            long long tidx = ((long long)i * N_TRAJ + t) * 2;
-            fprintf(fout, "%d,%.6f,%.6f\n", i, traj[tidx+0], traj[tidx+1]);
-        }
-    }
-    fclose(fout);
-    printf("Wrote %d particles x %d waypoints to trajectories.txt\n", N_P, N_TRAJ);
 
     free(ps);
-    delete[] traj;
     return 0;
 }
