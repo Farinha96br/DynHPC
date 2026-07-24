@@ -1,0 +1,158 @@
+
+// integrator_sample_gpu.cpp — GPU version: OpenMP target offload,
+// one GPU thread per particle. CPU version: integrator_sample_cpu.cpp.
+//
+// Simulation only, no I/O: particles are advanced from t = 0 to t_end and
+// their final states are left in ps[] (mapped back from the GPU).
+
+#define MAX_PARAMS 10   // max parameters per shape / mask
+#define MAX_MASKS   8   // max no-collision masks per CollisionableObject
+
+
+// load basic libs (host-only)
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <omp.h>
+
+// everything included inside this block is compiled for BOTH host and GPU;
+// only GPU-safe code may live here (no I/O, no allocation, no function pointers)
+#pragma omp declare target
+#include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
+#include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
+#include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
+#pragma omp end declare target
+
+/*
+compile (NVIDIA via NVHPC nvc++):
+    nvc++ -O2 -mp=gpu -gpu=ccnative -o GPUbuild integrator_sample_gpu.cpp -lm
+compile (NVIDIA via GCC/Clang):
+    g++ -O2 -fopenmp -fopenmp-targets=nvptx64 -o GPUbuild integrator_sample_gpu.cpp -lm
+run:
+    ./GPUbuild
+
+GPU note: OpenMP offloading does not support function pointer types on device.
+Shape dispatch uses integer IDs + switch (see thisTable.h).
+*/
+
+void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_buffer_times, double *host_buffer_IDS, double *host_buffer_x, double *host_buffer_y, double *host_buffer_vx, double *host_buffer_vy, int *host_buffer_n) {
+    // 6 buffers: for times, IDs, t,x, y, vx, vy
+    // Each buffer has size: N_P * N_REFLECTIONS * sizeof(double)
+    // Particle i owns the slice [i*N_REFLECTIONS, (i+1)*N_REFLECTIONS) in every
+    // buffer, so no two threads ever touch the same slot — no atomics needed.
+    int BUF_SZ = N_P * N_REFLECTIONS;
+    double *buffer_t = (double*)malloc(BUF_SZ * sizeof(double));
+    double *buffer_IDS = (double*)malloc(BUF_SZ * sizeof(double));
+    double *buffer_x = (double*)malloc(BUF_SZ * sizeof(double));
+    double *buffer_y = (double*)malloc(BUF_SZ * sizeof(double));
+    double *buffer_vx = (double*)malloc(BUF_SZ * sizeof(double));
+    double *buffer_vy = (double*)malloc(BUF_SZ * sizeof(double));
+    // how many slots of its slice each particle actually filled
+    int *buffer_n = (int*)malloc(N_P * sizeof(int));
+
+    state* ps = (state*)malloc(N_P * sizeof(state));
+    for (int i = 0; i < N_P; ++i) {
+        double x = 0.5 * i / (N_P - 1);
+        ps[i] = state(x, 0, 0.0, 0.0);
+    }
+
+    #pragma omp target teams distribute parallel for \
+        map(to: cobjs[0:2]) map(from: buffer_t[0:BUF_SZ], buffer_IDS[0:BUF_SZ], \
+                    buffer_x[0:BUF_SZ], buffer_y[0:BUF_SZ], \
+                    buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P]) \
+        map(tofrom: ps[0:N_P])
+
+    // For now make the collisionable objects fixed
+    CollisionableObject cobjs[2];
+    cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
+    cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
+      for (int i = 0; i < N_P; ++i) {
+        state  p = ps[i];
+        double t = 0.0;   // elapsed simulated time of particle i
+        int    k = 0;     // collisions recorded so far for particle i
+        while (t < t_end) {                                    // time loop
+            // Bounces are not capped: the step is subdivided until its time is
+            // spent. Termination rests on every continuing pass consuming a
+            // strictly positive dt_hit — see the resting-contact break below.
+            double dt_left = dt;
+            while (dt_left > 0.0) {
+                state s_new = singleStep(p, dt_left);                                  // 1. integrate
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt_left); // 2. detect
+                if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
+                p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
+                bool resting = (ev.dt_hit <= 0.0);
+                if (!resting) dt_left -= ev.dt_hit;   // the step's remaining time shrinks
+                // ── collision event hook: per-collision logic goes here ──
+                // p now holds the impact point and the OUTGOING velocity;
+                // dt - dt_left is the time consumed within this step up to impact.
+                if (k < N_REFLECTIONS) {
+                    int slot = i * N_REFLECTIONS + k;
+                    buffer_IDS  [slot] = i;
+                    buffer_times[slot] = t + (dt - dt_left);   // absolute time of impact
+                    buffer_x    [slot] = p.position.x;
+                    buffer_y    [slot] = p.position.y;
+                    buffer_vx   [slot] = p.velocity.x;
+                    buffer_vy   [slot] = p.velocity.y;
+                    ++k;
+                }
+                // dt_hit == 0 means the particle was already touching at step start:
+                // resolving again would reproduce this exact state and never exit.
+                if (resting) break;
+            }
+            t += dt;
+        }
+        ps[i] = p;   // final state back to host
+        buffer_n[i] = k;
+    }
+
+
+    free(buffer_times);
+    free(buffer_IDS);
+    free(buffer_x);
+    free(buffer_y);
+    free(buffer_vx);
+    free(buffer_vy);
+    free(buffer_n);
+    free(ps);
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+int main() {
+   
+      
+
+
+  
+    // ── write the collision table (host-side: the device cannot do I/O) ────────
+    // %.17g round-trips a double exactly, so CPU and GPU tables can be diffed
+    // literally rather than at printed precision.
+    FILE *f = fopen("collisions_gpu.txt", "w");
+    if (!f) { perror("collisions_gpu.txt"); return 1; }
+    fprintf(f, "particle_ID,t,x,y,vx,vy\n");
+    long long rows = 0, full = 0;
+    for (int i = 0; i < N_P; ++i) {
+        if (buffer_n[i] >= N_REFLECTIONS) ++full;
+        for (int k = 0; k < buffer_n[i]; ++k) {
+            int slot = i * N_REFLECTIONS + k;
+            fprintf(f, "%d,%.17g,%.17g,%.17g,%.17g,%.17g\n",
+                    (int)buffer_IDS[slot], buffer_times[slot],
+                    buffer_x[slot], buffer_y[slot],
+                    buffer_vx[slot], buffer_vy[slot]);
+            ++rows;
+        }
+    }
+    fclose(f);
+
+    
+
+    free(buffer_times);
+    free(buffer_IDS);
+    free(buffer_x);
+    free(buffer_y);
+    free(buffer_vx);
+    free(buffer_vy);
+    free(buffer_n);
+    free(ps);
+    return 0;
+}
