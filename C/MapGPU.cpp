@@ -35,20 +35,15 @@ GPU note: OpenMP offloading does not support function pointer types on device.
 Shape dispatch uses integer IDs + switch (see thisTable.h).
 */
 
+// extern "C" keeps the symbol name unmangled, so ctypes can find "MakeMap".
+extern "C"
 void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_buffer_times, double *host_buffer_IDS, double *host_buffer_x, double *host_buffer_y, double *host_buffer_vx, double *host_buffer_vy, int *host_buffer_n) {
-    // 6 buffers: for times, IDs, t,x, y, vx, vy
+    // The caller (numpy) owns every output buffer; we only fill them, so nothing
+    // has to be freed across the boundary.
     // Each buffer has size: N_P * N_REFLECTIONS * sizeof(double)
     // Particle i owns the slice [i*N_REFLECTIONS, (i+1)*N_REFLECTIONS) in every
     // buffer, so no two threads ever touch the same slot — no atomics needed.
     int BUF_SZ = N_P * N_REFLECTIONS;
-    double *buffer_t = (double*)malloc(BUF_SZ * sizeof(double));
-    double *buffer_IDS = (double*)malloc(BUF_SZ * sizeof(double));
-    double *buffer_x = (double*)malloc(BUF_SZ * sizeof(double));
-    double *buffer_y = (double*)malloc(BUF_SZ * sizeof(double));
-    double *buffer_vx = (double*)malloc(BUF_SZ * sizeof(double));
-    double *buffer_vy = (double*)malloc(BUF_SZ * sizeof(double));
-    // how many slots of its slice each particle actually filled
-    int *buffer_n = (int*)malloc(N_P * sizeof(int));
 
     state* ps = (state*)malloc(N_P * sizeof(state));
     for (int i = 0; i < N_P; ++i) {
@@ -56,16 +51,20 @@ void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_b
         ps[i] = state(x, 0, 0.0, 0.0);
     }
 
-    #pragma omp target teams distribute parallel for \
-        map(to: cobjs[0:2]) map(from: buffer_t[0:BUF_SZ], buffer_IDS[0:BUF_SZ], \
-                    buffer_x[0:BUF_SZ], buffer_y[0:BUF_SZ], \
-                    buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P]) \
-        map(tofrom: ps[0:N_P])
+    // For now make the collisionable objects fixed.
+    // Declared before the pragma: the pragma must sit immediately above its for
+    // loop, and cobjs has to exist before the map clause can name it.
+    const int N_OBJ = 2;
+    CollisionableObject cobjs[N_OBJ];
+    cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // wall: circle at (0,0), r=1
+    cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // line: y = 1.1, outside the wall
 
-    // For now make the collisionable objects fixed
-    CollisionableObject cobjs[2];
-    cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
-    cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
+    #pragma omp target teams distribute parallel for \
+        map(to: cobjs[0:N_OBJ], ps[0:N_P])          \
+        map(from: host_buffer_times[0:BUF_SZ], host_buffer_IDS[0:BUF_SZ], \
+                  host_buffer_x[0:BUF_SZ], host_buffer_y[0:BUF_SZ], \
+                  host_buffer_vx[0:BUF_SZ], host_buffer_vy[0:BUF_SZ], \
+                  host_buffer_n[0:N_P])
       for (int i = 0; i < N_P; ++i) {
         state  p = ps[i];
         double t = 0.0;   // elapsed simulated time of particle i
@@ -77,7 +76,7 @@ void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_b
             double dt_left = dt;
             while (dt_left > 0.0) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt_left); // 2. detect
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, dt_left); // 2. detect
                 if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
                 p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
                 bool resting = (ev.dt_hit <= 0.0);
@@ -87,12 +86,12 @@ void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_b
                 // dt - dt_left is the time consumed within this step up to impact.
                 if (k < N_REFLECTIONS) {
                     int slot = i * N_REFLECTIONS + k;
-                    buffer_IDS  [slot] = i;
-                    buffer_times[slot] = t + (dt - dt_left);   // absolute time of impact
-                    buffer_x    [slot] = p.position.x;
-                    buffer_y    [slot] = p.position.y;
-                    buffer_vx   [slot] = p.velocity.x;
-                    buffer_vy   [slot] = p.velocity.y;
+                    host_buffer_IDS  [slot] = i;
+                    host_buffer_times[slot] = t + (dt - dt_left);   // absolute time of impact
+                    host_buffer_x    [slot] = p.position.x;
+                    host_buffer_y    [slot] = p.position.y;
+                    host_buffer_vx   [slot] = p.velocity.x;
+                    host_buffer_vy   [slot] = p.velocity.y;
                     ++k;
                 }
                 // dt_hit == 0 means the particle was already touching at step start:
@@ -102,57 +101,10 @@ void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_b
             t += dt;
         }
         ps[i] = p;   // final state back to host
-        buffer_n[i] = k;
+        host_buffer_n[i] = k;
     }
 
-
-    free(buffer_times);
-    free(buffer_IDS);
-    free(buffer_x);
-    free(buffer_y);
-    free(buffer_vx);
-    free(buffer_vy);
-    free(buffer_n);
-    free(ps);
+    free(ps);   // the output buffers belong to the caller — do not free them
 }
 
-// ── main ──────────────────────────────────────────────────────────────────────
 
-int main() {
-   
-      
-
-
-  
-    // ── write the collision table (host-side: the device cannot do I/O) ────────
-    // %.17g round-trips a double exactly, so CPU and GPU tables can be diffed
-    // literally rather than at printed precision.
-    FILE *f = fopen("collisions_gpu.txt", "w");
-    if (!f) { perror("collisions_gpu.txt"); return 1; }
-    fprintf(f, "particle_ID,t,x,y,vx,vy\n");
-    long long rows = 0, full = 0;
-    for (int i = 0; i < N_P; ++i) {
-        if (buffer_n[i] >= N_REFLECTIONS) ++full;
-        for (int k = 0; k < buffer_n[i]; ++k) {
-            int slot = i * N_REFLECTIONS + k;
-            fprintf(f, "%d,%.17g,%.17g,%.17g,%.17g,%.17g\n",
-                    (int)buffer_IDS[slot], buffer_times[slot],
-                    buffer_x[slot], buffer_y[slot],
-                    buffer_vx[slot], buffer_vy[slot]);
-            ++rows;
-        }
-    }
-    fclose(f);
-
-    
-
-    free(buffer_times);
-    free(buffer_IDS);
-    free(buffer_x);
-    free(buffer_y);
-    free(buffer_vx);
-    free(buffer_vy);
-    free(buffer_n);
-    free(ps);
-    return 0;
-}
