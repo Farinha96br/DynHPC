@@ -55,12 +55,14 @@ void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_b
     // Declared before the pragma: the pragma must sit immediately above its for
     // loop, and cobjs has to exist before the map clause can name it.
     const int N_OBJ = 2;
+    const int N_L   = 1;
+    Layer layers[N_L];   // single mask-less layer: everything collides everywhere
     CollisionableObject cobjs[N_OBJ];
     cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // wall: circle at (0,0), r=1
     cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // line: y = 1.1, outside the wall
 
     #pragma omp target teams distribute parallel for \
-        map(to: cobjs[0:N_OBJ], ps[0:N_P])          \
+        map(to: cobjs[0:N_OBJ], layers[0:N_L], ps[0:N_P]) \
         map(from: host_buffer_times[0:BUF_SZ], host_buffer_IDS[0:BUF_SZ], \
                   host_buffer_x[0:BUF_SZ], host_buffer_y[0:BUF_SZ], \
                   host_buffer_vx[0:BUF_SZ], host_buffer_vy[0:BUF_SZ], \
@@ -76,7 +78,7 @@ void MakeMap(double dt, double t_end, int N_P, int N_REFLECTIONS, double *host_b
             double dt_left = dt;
             while (dt_left > 0.0) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, dt_left); // 2. detect
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, layers, dt_left); // 2. detect
                 if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
                 p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
                 bool resting = (ev.dt_hit <= 0.0);

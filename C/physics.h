@@ -61,7 +61,8 @@ state singleStep(const state& p, double dt) {
 // NOT yet crossed the surface. Bouncing from there keeps the particle on the
 // legal side for any restitution — it can never be marooned inside/behind a wall.
 collisionEvent detectFirstCollision(const state& p, const state& s_new,
-                                    const CollisionableObject* objs, int n_objs, double dt) {
+                                    const CollisionableObject* objs, int n_objs,
+                                    const Layer* layers, double dt) {
     collisionEvent ev(-1, dt, s_new);
 
     for (int i = 0; i < n_objs; ++i) {
@@ -89,9 +90,12 @@ collisionEvent detectFirstCollision(const state& p, const state& s_new,
             }
         }
 
+        // masks are shared per layer: a hit on any object of the layer is
+        // suppressed when one of the layer's masks is negative at the impact
+        const Layer& L = layers[objs[i].layer_id];
         bool masked = false;
-        for (int m = 0; m < objs[i].n_masks && !masked; ++m)
-            if (eval_mask(objs[i].masks[m].mask_id, objs[i].masks[m].p, s_surf.position.x, s_surf.position.y) < 0.0)
+        for (int m = 0; m < L.n_masks && !masked; ++m)
+            if (eval_mask(L.masks[m].mask_id, L.masks[m].p, s_surf.position.x, s_surf.position.y) < 0.0)
                 masked = true;
         if (masked) continue;
 

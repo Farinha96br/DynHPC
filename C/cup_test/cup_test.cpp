@@ -20,7 +20,7 @@
 // only GPU-safe code may live here (no I/O, no allocation, no function pointers)
 #pragma omp declare target
 #include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
-#include "thisTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
+#include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
 #pragma omp end declare target
 
@@ -68,14 +68,19 @@ int main() {
     // Each surface is the zero level-set of an implicit function F(x,y) = 0,
     // selected by shape_id (see eval_F in thisTable.h). equationSet initializer:
     //   { name, n_params, { params... }, shape_id }
-    // Masks carve out regions where a surface does NOT collide: a hit is ignored
-    // when any of the object's masks evaluates negative at the impact point.
+    // Masks live on layers and carve out regions where NO object of that layer
+    // collides: a hit is ignored when any of the layer's masks evaluates
+    // negative at the impact point. Both cups share layer 1's mask.
+    const int N_L = 2;
+    Layer layers[N_L];                                     // layer 0: no masks (outer wall)
+    layers[1].masks[0] = {2, {2.5}};  layers[1].n_masks = 1;  // layer 1: masked for y > 2.5 (lower halves only)
+
     CollisionableObject cobjs[5];
     cobjs[0].obj = {"Circle",    3, {0.0,  0.0, 4.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
     cobjs[3].obj = {"LeftCup",   3, {-1.5, 2.5, 0.5}, 0};  cobjs[3].restitution = 0.1;  // circle at (-1.5,2.5), r=0.5 ...
-    cobjs[3].masks[0] = {2, {2.5}};  cobjs[3].n_masks = 1;                              // ... collides on its lower half only (masked for y > 2.5)
+    cobjs[3].layer_id = 1;                                                              // ... collides on its lower half only (layer 1)
     cobjs[4].obj = {"RightCup",  3, { 1.5, 2.5, 0.5}, 0};  cobjs[4].restitution = 0.1;  // circle at (1.5,2.5), r=0.5 ...
-    cobjs[4].masks[0] = {2, {2.5}};  cobjs[4].n_masks = 1;                              // ... collides on its lower half only (masked for y > 2.5)
+    cobjs[4].layer_id = 1;                                                              // ... collides on its lower half only (layer 1)
 
     // ── simulation ─────────────────────────────────────────────────────────────
     // Particles never interact, so each one runs its whole time loop
@@ -96,7 +101,7 @@ int main() {
 
 
     #pragma omp target teams distribute parallel for \
-            map(to: cobjs[0:5]) map(tofrom: ps[0:N_P])
+            map(to: cobjs[0:5], layers[0:N_L]) map(tofrom: ps[0:N_P])
     for (int i = 0; i < N_P; ++i) {
         state  p = ps[i];
         double t = 0.0;   // elapsed simulated time of particle i
@@ -104,7 +109,7 @@ int main() {
             double dt_left = dt;
             for (int b = 0; b < MAX_BOUNCES_PER_STEP; ++b) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt_left); // 2. detect
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, layers, dt_left); // 2. detect
                 if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
                 // ── collision event hook: per-collision logic goes here ──
                 p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
