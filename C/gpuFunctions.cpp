@@ -38,29 +38,68 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 
 
 
+
+
+
+
+
+
+
+
+void testTimeSeries(){
+    /* Arguments:
+    N_P: number of particles
+    dt: time step
+    t_end: end time
+    ps: array of particle states
+    N_L: number of layers
+    
+
+    */
+
+    state* ps = (state*)malloc(N_P * sizeof(state));
+    for (int i = 0; i < N_P; ++i) {
+        double vx = 1.0 * i / (N_P - 1);
+        ps[i] = state(0.0, 2.0, vx, 0.0);
+    }
+}
+
+
+
+
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
-    const double dt    = 1e-2;   // integration time step
-    const double t_end = 1e5;    // total simulated time
-    const int    N_P   = 20;    // number of particles
+    const double dt    = 1e-3;   // integration time step
+    const double t_end = 10000.0;    // total simulated time
+    const int    N_P   = 10;    // number of particles
 
     // ── initial conditions ─────────────────────────────────────────────────────
-    // All particles start at the origin at rest vertically; vx is swept linearly
-    // from 0 (particle 0, falls straight down) to 2 (particle N_P-1).
+    // All particles start above the touch point of the circles; vx is swept
+    // linearly from 0 (particle 0, falls straight down) to 0.5 (particle N_P-1).
     state* ps = (state*)malloc(N_P * sizeof(state));
     for (int i = 0; i < N_P; ++i) {
-        double vx = 2.5 * i / (N_P - 1);
-        ps[i] = state(0.0, -0.90, vx, 0.0);
+        double vx = 1.0 * i / (N_P - 1);
+        ps[i] = state(0.0, 2.0, vx, 0.0);
     }
 
-    const int N_OBJ = 2;
+    // ── collision objects ──────────────────────────────────────────────────────
+    // Two touching circles with a pass-through disk masked out at the touch
+    // point (the same mask on each circle), inside a bounding box.
+    const int N_OBJ = 6;
     CollisionableObject cobjs[N_OBJ];
-    cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
-    cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
+    cobjs[0].obj = {"CircleL", 3, {-1.0, 0.0, 1.0}, 0};   // touching circles at (±1,0), r=1,
+    cobjs[1].obj = {"CircleR", 3, { 1.0, 0.0, 1.0}, 0};   // touch point = origin
+    cobjs[0].masks[0] = {4, {0.0, 0.0, 0.3}};  cobjs[0].n_masks = 1;  // pass-through disk at (0,0), r=0.3
+    cobjs[1].masks[0] = {4, {0.0, 0.0, 0.3}};  cobjs[1].n_masks = 1;  // (same disk on the other circle)
+    cobjs[2].obj = {"Floor",   2, {0.0,  3.0}, 1};        // y = -3
+    cobjs[3].obj = {"Ceil",    2, {0.0, -3.0}, 1};        // y =  3
+    cobjs[4].obj = {"WallL",   1, {-3.0}, 3};             // x = -3 (vertical line shape)
+    cobjs[5].obj = {"WallR",   1, { 3.0}, 3};             // x =  3
 
-    int N_REFLECTIONS = 100000;   // max collisions recorded per particle
+    int N_REFLECTIONS = 10000;   // max collisions recorded per particle
 
     // 6 buffers: for times, IDs, x, y, vx, vy
     // Each buffer has size: N_P * N_REFLECTIONS * sizeof(double)

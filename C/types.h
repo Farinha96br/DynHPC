@@ -58,22 +58,10 @@ struct mask {
     double p[MAX_PARAMS] = {};
 };
 
-struct Layer {
-    /*
-    A layer groups CollisionableObjects that share the same no-collision masks.
-    Objects reference their layer by index (CollisionableObject::layer_id).
-    masks: carve out regions where NO object of this layer collides — a hit on
-           any object of the layer is ignored when any mask evaluates negative
-           at the impact point.
-    n_masks: how many mask slots are in use (0 = layer collides everywhere).
-    */
-    mask masks[MAX_MASKS];
-    int  n_masks = 0;
-};
-
 class CollisionableObject {
 public:
     equationSet obj;
     double      restitution = 1.0;
-    int         layer_id    = 0;   // index into the layers[] array; masks come from there
+    mask        masks[MAX_MASKS];
+    int         n_masks = 0;
 };
