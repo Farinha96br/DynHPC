@@ -36,12 +36,8 @@ Thumbs.db
 *.json
 *.log
 
-<<<<<<< HEAD
 # containers
 *.sif
-=======
-# images
-*.sif
 
->>>>>>> 26de52a (ignore .sif images)
-
+# shared libraries
+*.so
