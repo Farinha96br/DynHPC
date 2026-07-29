@@ -46,25 +46,6 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 
 
 
-void testTimeSeries(){
-    /* Arguments:
-    N_P: number of particles
-    dt: time step
-    t_end: end time
-    ps: array of particle states
-    N_L: number of layers
-    
-
-    */
-
-    state* ps = (state*)malloc(N_P * sizeof(state));
-    for (int i = 0; i < N_P; ++i) {
-        double vx = 1.0 * i / (N_P - 1);
-        ps[i] = state(0.0, 2.0, vx, 0.0);
-    }
-}
-
-
 
 
 
@@ -72,9 +53,9 @@ void testTimeSeries(){
 
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
-    const double dt    = 1e-3;   // integration time step
-    const double t_end = 10000.0;    // total simulated time
-    const int    N_P   = 10;    // number of particles
+    const double dt    = 1e-2;   // integration time step
+    const double t_end = 100.0;    // total simulated time
+    const int    N_P   = 50;    // number of particles
 
     // ── initial conditions ─────────────────────────────────────────────────────
     // All particles start above the touch point of the circles; vx is swept
@@ -101,6 +82,18 @@ int main() {
 
     int N_REFLECTIONS = 10000;   // max collisions recorded per particle
 
+    // ── time-series sampling ───────────────────────────────────────────────────
+    // the state of every particle is recorded every SAMPLE_EVERY timesteps;
+    // sample s is taken at t = s * SAMPLE_EVERY * dt, so no time buffer is needed
+    const int SAMPLE_EVERY = 1;
+    const int N_STEPS   = (int)(t_end / dt);
+    const int N_SAMPLES = N_STEPS / SAMPLE_EVERY + 1;   // +1: the final state is the last sample
+    int TS_SZ = N_P * N_SAMPLES;
+    double *ts_x  = (double*)malloc(TS_SZ * sizeof(double));
+    double *ts_y  = (double*)malloc(TS_SZ * sizeof(double));
+    double *ts_vx = (double*)malloc(TS_SZ * sizeof(double));
+    double *ts_vy = (double*)malloc(TS_SZ * sizeof(double));
+
     // 6 buffers: for times, IDs, x, y, vx, vy
     // Each buffer has size: N_P * N_REFLECTIONS * sizeof(double)
     // Particle i owns the slice [i*N_REFLECTIONS, (i+1)*N_REFLECTIONS) in every
@@ -120,15 +113,21 @@ int main() {
         map(to: cobjs[0:N_OBJ]) \
         map(from: buffer_times[0:BUF_SZ], buffer_IDS[0:BUF_SZ], \
                     buffer_x[0:BUF_SZ], buffer_y[0:BUF_SZ], \
-                    buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P]) \
+                    buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P], \
+                    ts_x[0:TS_SZ], ts_y[0:TS_SZ], ts_vx[0:TS_SZ], ts_vy[0:TS_SZ]) \
         map(tofrom: ps[0:N_P])
 
 
     for (int i = 0; i < N_P; ++i) {
         state  p = ps[i];
-        double t = 0.0;   // elapsed simulated time of particle i
         int    k = 0;     // collisions recorded so far for particle i
-        while (t < t_end) {                                    // time loop
+        for (int step = 0; step < N_STEPS; ++step) {           // time loop
+            if (step % SAMPLE_EVERY == 0) {                    // time-series sample
+                int slot = i * N_SAMPLES + step / SAMPLE_EVERY;
+                ts_x [slot] = p.position.x;  ts_y [slot] = p.position.y;
+                ts_vx[slot] = p.velocity.x;  ts_vy[slot] = p.velocity.y;
+            }
+            double t = step * dt;   // elapsed simulated time of particle i
             // Bounces are not capped: the step is subdivided until its time is
             // spent. Termination rests on every continuing pass consuming a
             // strictly positive dt_hit — see the resting-contact break below.
@@ -157,7 +156,11 @@ int main() {
                 // resolving again would reproduce this exact state and never exit.
                 if (resting) break;
             }
-            t += dt;
+        }
+        {   // the final state is the last time-series sample
+            int slot = i * N_SAMPLES + (N_SAMPLES - 1);
+            ts_x [slot] = p.position.x;  ts_y [slot] = p.position.y;
+            ts_vx[slot] = p.velocity.x;  ts_vy[slot] = p.velocity.y;
         }
         ps[i] = p;   // final state back to host
         buffer_n[i] = k;
@@ -188,6 +191,27 @@ int main() {
         printf("WARNING: %lld particle(s) hit the %d-slot limit — their logs are "
                "truncated; raise N_REFLECTIONS to keep the rest\n", full, N_REFLECTIONS);
 
+    // ── write the time series ──────────────────────────────────────────────────
+    // sample s of particle i was taken at t = s * SAMPLE_EVERY * dt
+    FILE *fts = fopen("timeseries_gpu.txt", "w");
+    if (!fts) { perror("timeseries_gpu.txt"); return 1; }
+    fprintf(fts, "particle_ID,t,x,y,vx,vy\n");
+    for (int i = 0; i < N_P; ++i) {
+        for (int s = 0; s < N_SAMPLES; ++s) {
+            int slot = i * N_SAMPLES + s;
+            fprintf(fts, "%d,%.17g,%.17g,%.17g,%.17g,%.17g\n",
+                    i, s * SAMPLE_EVERY * dt,
+                    ts_x[slot], ts_y[slot], ts_vx[slot], ts_vy[slot]);
+        }
+    }
+    fclose(fts);
+    printf("timeseries_gpu.txt: %d rows (%d particles x %d samples, every %d steps)\n",
+           N_P * N_SAMPLES, N_P, N_SAMPLES, SAMPLE_EVERY);
+
+    free(ts_x);
+    free(ts_y);
+    free(ts_vx);
+    free(ts_vy);
     free(buffer_times);
     free(buffer_IDS);
     free(buffer_x);
