@@ -39,7 +39,14 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 
 
 
-
+// force field for this simulation — declared in physics.h, defined by the main
+// script; the declare target block gives the GPU its own copy
+#pragma omp declare target
+vector2D force_at_position(double x, double y) {
+    // uniform gravity downwards
+    return vector2D(0.0, -0.1);
+}
+#pragma omp end declare target
 
 
 

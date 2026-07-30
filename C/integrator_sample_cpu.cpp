@@ -19,6 +19,12 @@
 #include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
 
+// force field for this simulation — declared in physics.h, defined by the main script
+vector2D force_at_position(double x, double y) {
+    // uniform gravity downwards
+    return vector2D(0.0, -1.0);
+}
+
 /*
 compile:
     g++ -O2 -fopenmp -o CPUbuild integrator_sample_cpu.cpp -lm
@@ -31,6 +37,8 @@ int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
     const double dt    = 1e-4;   // integration time step
     const double t_end = 1.0;    // total simulated time
+    // step count is integer: the loop time must not accumulate dt
+    const long long N_STEPS = (long long)(t_end / dt + 0.5);
     const int    N_P   = 200;    // number of particles
 
     // ── random initial conditions (reproducible seed) ──────────────────────────
@@ -76,8 +84,7 @@ int main() {
     #pragma omp parallel for
     for (int i = 0; i < N_P; ++i) {
         state  p = ps[i];
-        double t = 0.0;   // elapsed simulated time of particle i
-        while (t < t_end) {                                    // time loop
+        for (long long step = 0; step < N_STEPS; ++step) {     // time loop
             double dt_left = dt;
             for (int b = 0; b < MAX_BOUNCES_PER_STEP; ++b) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
@@ -88,7 +95,6 @@ int main() {
                 dt_left -= ev.dt_hit;
                 if (dt_left <= 0.0) break;
             }
-            t += dt;
         }
         ps[i] = p;   // final state
     }

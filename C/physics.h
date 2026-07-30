@@ -5,12 +5,13 @@
 // residual step time is safe
 #define MAX_BOUNCES_PER_STEP 1
 
+// The force field is supplied by the main script, not by this file: declare it
+// here, and every .cpp that includes physics.h must define it (inside its
+// "#pragma omp declare target" region so the GPU gets a copy). This keeps the
+// integrator generic without device function pointers, which OpenMP offload
+// does not support.
+vector2D force_at_position(double x, double y);
 
-
-vector2D force_at_position(double x, double y) {
-    
-    return vector2D(0.0, -1.0);
-}
 
 vector2D reflect(const vector2D& v, const vector2D& n) {
     double dot = v.x*n.x + v.y*n.y;
@@ -21,17 +22,25 @@ vector2D calculateNormal(const equationSet& obj, double x, double y) {
     double dFdx = eval_dx(obj.shape_id, obj.p, x, y);
     double dFdy = eval_dy(obj.shape_id, obj.p, x, y);
     double len  = sqrt(dFdx*dFdx + dFdy*dFdy);
+    // |grad F| = 0 at a shape's critical point (e.g. a degenerate zero-radius
+    // circle). Returning a null normal makes the bounce a no-op instead of
+    // letting a NaN propagate silently through the whole trajectory.
+    if (!(len > 0.0)) return vector2D(0.0, 0.0);
     double sig  = eval_F(obj.shape_id, obj.p, x, y) < 0.0 ? -1.0 : 1.0;
     return vector2D(sig*dFdx/len, sig*dFdy/len);
 }
 
 
 state yoshida4Step(const state& p, double dt) {
-    //const double cbrt2 = pow(2.0, 1.0/3.0);
-    const double cbrt2 = 1.2599210498948731648; // hard-coded to avoid pow() call
-    const double w1    = 1.0 / (2.0 - cbrt2);
-    const double w0    = -cbrt2 * w1;
-    const double c1 = w1/2.0, c2 = (w0+w1)/2.0, d1 = w1, d2 = w0;
+    // Yoshida 4th-order coefficients, hard-coded (no pow(), no runtime algebra).
+    // Derived from cbrt2 = 2^(1/3), w1 = 1/(2 - cbrt2), w0 = -cbrt2*w1 as
+    //   c1 = w1/2,  c2 = (w0+w1)/2,  d1 = w1,  d2 = w0
+    // and written at 17 significant digits, so each literal is the same double
+    // the expressions produced.
+    const double c1 =  0.67560359597982889;
+    const double c2 = -0.17560359597982889;
+    const double d1 =  1.3512071919596578;
+    const double d2 = -1.7024143839193155;
 
     double x1 = p.position.x + c1*dt*p.velocity.x;
     double y1 = p.position.y + c1*dt*p.velocity.y;
@@ -78,8 +87,11 @@ collisionEvent detectFirstCollision(const state& p, const state& s_new,
             // bisection keeps resting particles ~free instead of 32× a step.
             s_surf = p;
         } else {
-            for (int iter = 0; iter < 32; ++iter) {
+            // bisect until the bracket is one ULP wide: the impact accuracy is set
+            // by this tolerance, not by the arithmetic, and it scales with dt
+            for (int iter = 0; iter < 60; ++iter) {
                 double dt_mid = 0.5*(dt_small + dt_large);
+                if (dt_mid <= dt_small || dt_mid >= dt_large) break;   // converged
                 state  s_mid  = singleStep(p, dt_mid);
                 double F_mid  = eval_F(objs[i].obj.shape_id, objs[i].obj.p, s_mid.position.x, s_mid.position.y);
                 // F_mid == 0 counts as crossed, so s_before always keeps a strictly
@@ -109,12 +121,23 @@ collisionEvent detectFirstCollision(const state& p, const state& s_new,
 state resolveCollision(const collisionEvent& ev, const CollisionableObject& obj,
                        double mass, double dt) {
     vector2D normal = calculateNormal(obj.obj, ev.s_hit.position.x, ev.s_hit.position.y);
-    vector2D v_ref  = reflect(ev.s_hit.velocity, normal);
-    double vx = obj.restitution * v_ref.x;
-    double vy = obj.restitution * v_ref.y;
 
+    // Restitution acts on the NORMAL component only; a frictionless wall leaves
+    // the tangential component untouched. Scaling the whole reflected vector
+    // would damp the tangential motion too, i.e. silently add friction.
+    //   v_out = v_t - e*v_n*n  =  v - (1+e)*(v.n)*n
+    // At e = 1 this is exactly reflect(), so elastic scenes are unchanged.
+    double vn_in = ev.s_hit.velocity.x*normal.x + ev.s_hit.velocity.y*normal.y;  // < 0, incoming
+    double vx = ev.s_hit.velocity.x - (1.0 + obj.restitution) * vn_in * normal.x;
+    double vy = ev.s_hit.velocity.y - (1.0 + obj.restitution) * vn_in * normal.y;
+
+    // Only the force component pushing INTO the surface can pull the particle
+    // back onto it, so that -- not |f| -- sets the escape speed. On a surface
+    // where the force is tangential (a vertical wall under gravity) nothing
+    // pulls the particle back and the clamp must never fire.
     vector2D f     = force_at_position(ev.s_hit.position.x, ev.s_hit.position.y);
-    double   v_esc = 2.0 * sqrt(f.x*f.x + f.y*f.y) * dt;
+    double   f_in  = -(f.x*normal.x + f.y*normal.y);
+    double   v_esc = 2.0 * (f_in > 0.0 ? f_in : 0.0) * dt;
     double   vn    = vx*normal.x + vy*normal.y;   // outgoing normal speed (normal points to the legal side)
     if (vn < v_esc) { vx -= vn*normal.x; vy -= vn*normal.y; }
 

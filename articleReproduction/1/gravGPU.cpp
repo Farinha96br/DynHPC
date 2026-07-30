@@ -21,6 +21,13 @@
 #include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
 #include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
+
+// force field for this simulation — declared in physics.h, defined by the main
+// script; inside the declare target block so the GPU gets its own copy
+vector2D force_at_position(double x, double y) {
+    // uniform gravity downwards
+    return vector2D(0.0, -0.5);
+}
 #pragma omp end declare target
 
 /*
@@ -42,25 +49,26 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
-    const double dt    = 1e-2;   // integration time step
-    const double t_end = 1e5;    // total simulated time
+    const double dt    = 1e-4;   // integration time step
+    const double t_end = 100000.0;    // total simulated time
     const int    N_P   = 20;    // number of particles
+    // step count is integer: the loop time must not accumulate dt (1e8 roundings)
+    const long long N_STEPS = (long long)(t_end / dt + 0.5);
 
     // ── initial conditions ─────────────────────────────────────────────────────
     // All particles start at the origin at rest vertically; vx is swept linearly
     // from 0 (particle 0, falls straight down) to 2 (particle N_P-1).
     state* ps = (state*)malloc(N_P * sizeof(state));
     for (int i = 0; i < N_P; ++i) {
-        double vx = 2.5 * i / (N_P - 1);
+        double vx = 1.25 * i / (N_P - 1);
         ps[i] = state(0.0, -0.90, vx, 0.0);
     }
 
-    const int N_OBJ = 2;
+    const int N_OBJ = 1;
     CollisionableObject cobjs[N_OBJ];
     cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
-    cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
 
-    int N_REFLECTIONS = 100000;   // max collisions recorded per particle
+    int N_REFLECTIONS = 1e5;   // max collisions recorded per particle
 
     // 6 buffers: for times, IDs, x, y, vx, vy
     // Each buffer has size: N_P * N_REFLECTIONS * sizeof(double)
@@ -87,9 +95,9 @@ int main() {
 
     for (int i = 0; i < N_P; ++i) {
         state  p = ps[i];
-        double t = 0.0;   // elapsed simulated time of particle i
         int    k = 0;     // collisions recorded so far for particle i
-        while (t < t_end) {                                    // time loop
+        for (long long step = 0; step < N_STEPS; ++step) {     // time loop
+            const double t = step * dt;   // elapsed simulated time of particle i
             // Bounces are not capped: the step is subdivided until its time is
             // spent. Termination rests on every continuing pass consuming a
             // strictly positive dt_hit — see the resting-contact break below.
@@ -118,7 +126,6 @@ int main() {
                 // resolving again would reproduce this exact state and never exit.
                 if (resting) break;
             }
-            t += dt;
         }
         ps[i] = p;   // final state back to host
         buffer_n[i] = k;

@@ -18,11 +18,10 @@ NOTE: the paper draws one phase portrait per FIXED energy. This data sweeps the
 launch vx, so every particle sits on its own energy shell -- points are coloured
 by E to make that explicit. See the notes printed at the end of this script.
 
-Outputs one combined map (billiard_map.png) plus one map per particle
-(billiard_map_p00.png, billiard_map_p01.png, ...), each coloured light->dark
-by collision order.
+Outputs one map per particle, named <out_prefix>_p00.png, <out_prefix>_p01.png,
+..., each coloured light->dark by collision order.
 
-    python3 plot_billiard_map.py [collisions_gpu.txt]
+    python3 plot_billiard_map.py [collision_table.txt] [out_prefix]
 """
 
 import sys
@@ -33,8 +32,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "collisions_gpu.txt"
-OUT = "billiard_map.png"
+
+SRC = sys.argv[1] if len(sys.argv) > 1 else "collisions_gpu.txt"   # collision table to read
+OUT = sys.argv[2] if len(sys.argv) > 2 else "billiard_map"        # prefix of the figures written
 
 # scene / physics: must match SimpleGravCircle.cpp and physics.h
 WALL_R = 1.0
@@ -71,8 +71,8 @@ def draw_map(th, al, colors, norm, cbar_label, cbar_ticks, title, subtitle, out)
     for tv in (np.pi / 2, 3 * np.pi / 2):
         ax.axvline(tv, color=GRID, lw=1.0, zorder=1)
 
-    ax.scatter(th, al, s=2.0, c=colors, edgecolors=SURFACE,
-               linewidths=0.4, alpha=0.5, zorder=3)
+    ax.scatter(th, al, s=1.0, c=colors, edgecolors=SURFACE,
+               linewidths=0.4, zorder=3)
 
     # the period-1 vertical orbit at the bottom of the billiard (particle 0)
     ax.plot(3 * np.pi / 2, np.pi / 2, marker="o", ms=9, mfc="none",
@@ -136,7 +136,7 @@ for p in range(n_p):
              f"Collision map — particle {p}",
              f"{n_c} collisions · E = {energy[sel][0]:.4f} · "
              "coordinates after da Costa, Dettmann & Leonel (arXiv:1308.0362)",
-             f"billiard_map_p{p:02d}.png")
+             f"{OUT}_p{p:02d}.png")
 
 # ── what this data can and cannot show ────────────────────────────────────────
 per_orbit = np.bincount(pid.astype(int))

@@ -1,6 +1,6 @@
 
-// integrator_sample_gpu.cpp — GPU version: OpenMP target offload,
-// one GPU thread per particle. CPU version: integrator_sample_cpu.cpp.
+// integrator_sample_cpu.cpp — CPU version: OpenMP parallel for,
+// one CPU thread per particle.
 //
 // Simulation only, no I/O: particles are advanced from t = 0 to t_end and
 // their final states are left in ps[] (mapped back from the GPU).
@@ -15,9 +15,7 @@
 #include <cstdlib>
 #include <omp.h>
 
-// everything included inside this block is compiled for BOTH host and GPU;
-// only GPU-safe code may live here (no I/O, no allocation, no function pointers)
-#pragma omp declare target
+// everything included here is compiled for the host CPU.
 #include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
 #include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
@@ -26,20 +24,16 @@
 // script; inside the declare target block so the GPU gets its own copy
 vector2D force_at_position(double x, double y) {
     // uniform gravity downwards
-    return vector2D(0.0, -1.0);
+    return vector2D(0.0, -0.5);
 }
-#pragma omp end declare target
 
 /*
-compile (NVIDIA via NVHPC nvc++):
-    nvc++ -O2 -mp=gpu -gpu=ccnative -o GPUbuild integrator_sample_gpu.cpp -lm
-compile (NVIDIA via GCC/Clang):
-    g++ -O2 -fopenmp -fopenmp-targets=nvptx64 -o GPUbuild integrator_sample_gpu.cpp -lm
+compile:
+    g++ -O2 -fopenmp -o CPUbuild integrator_sample_cpu.cpp -lm
 run:
-    ./GPUbuild
+    ./CPUbuild
 
-GPU note: OpenMP offloading does not support function pointer types on device.
-Shape dispatch uses integer IDs + switch (see thisTable.h).
+CPU note: shape dispatch uses integer IDs + switch (see thisTable.h).
 */
 
 
@@ -49,36 +43,26 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
-    const double dt    = 1e-3;   // integration time step
-    const double t_end = 10000.0;    // total simulated time
-    // step count is integer: the loop time must not accumulate dt
+    const double dt    = 1e-4;   // integration time step
+    const double t_end = 100000.0;    // total simulated time
+    const int    N_P   = 20;    // number of particles
+    // step count is integer: the loop time must not accumulate dt (1e8 roundings)
     const long long N_STEPS = (long long)(t_end / dt + 0.5);
-    const int    N_P   = 10;    // number of particles
 
     // ── initial conditions ─────────────────────────────────────────────────────
-    // All particles start above the touch point of the circles; vx is swept
-    // linearly from 0 (particle 0, falls straight down) to 0.5 (particle N_P-1).
+    // All particles start at the origin at rest vertically; vx is swept linearly
+    // from 0 (particle 0, falls straight down) to 2 (particle N_P-1).
     state* ps = (state*)malloc(N_P * sizeof(state));
     for (int i = 0; i < N_P; ++i) {
-        double vx = 1.0 * i / (N_P - 1);
-        ps[i] = state(0.0, 2.0, vx, 0.0);
+        double vx = 1.25 * i / (N_P - 1);
+        ps[i] = state(0.0, -0.90, vx, 0.0);
     }
 
-    // ── collision objects ──────────────────────────────────────────────────────
-    // Two touching circles with a pass-through disk masked out at the touch
-    // point (the same mask on each circle), inside a bounding box.
-    const int N_OBJ = 6;
+    const int N_OBJ = 1;
     CollisionableObject cobjs[N_OBJ];
-    cobjs[0].obj = {"CircleL", 3, {-1.0, 0.0, 1.0}, 0};   // touching circles at (±1,0), r=1,
-    cobjs[1].obj = {"CircleR", 3, { 1.0, 0.0, 1.0}, 0};   // touch point = origin
-    cobjs[0].masks[0] = {4, {0.0, 0.0, 0.3}};  cobjs[0].n_masks = 1;  // pass-through disk at (0,0), r=0.3
-    cobjs[1].masks[0] = {4, {0.0, 0.0, 0.3}};  cobjs[1].n_masks = 1;  // (same disk on the other circle)
-    cobjs[2].obj = {"Floor",   2, {0.0,  3.0}, 1};        // y = -3
-    cobjs[3].obj = {"Ceil",    2, {0.0, -3.0}, 1};        // y =  3
-    cobjs[4].obj = {"WallL",   1, {-3.0}, 3};             // x = -3 (vertical line shape)
-    cobjs[5].obj = {"WallR",   1, { 3.0}, 3};             // x =  3
+    cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
 
-    int N_REFLECTIONS = 10000;   // max collisions recorded per particle
+    int N_REFLECTIONS = 1e5;   // max collisions recorded per particle
 
     // 6 buffers: for times, IDs, x, y, vx, vy
     // Each buffer has size: N_P * N_REFLECTIONS * sizeof(double)
@@ -94,13 +78,7 @@ int main() {
     // how many slots of its slice each particle actually filled
     int *buffer_n = (int*)malloc(N_P * sizeof(int));
 
-    // the buffers are written on the device and read on the host -> map(from:)
-    #pragma omp target teams distribute parallel for \
-        map(to: cobjs[0:N_OBJ]) \
-        map(from: buffer_times[0:BUF_SZ], buffer_IDS[0:BUF_SZ], \
-                    buffer_x[0:BUF_SZ], buffer_y[0:BUF_SZ], \
-                    buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P]) \
-        map(tofrom: ps[0:N_P])
+    #pragma omp parallel for
 
 
     for (int i = 0; i < N_P; ++i) {
@@ -144,8 +122,8 @@ int main() {
     // ── write the collision table (host-side: the device cannot do I/O) ────────
     // %.17g round-trips a double exactly, so CPU and GPU tables can be diffed
     // literally rather than at printed precision.
-    FILE *f = fopen("collisions_gpu.txt", "w");
-    if (!f) { perror("collisions_gpu.txt"); return 1; }
+    FILE *f = fopen("collisions_cpu.txt", "w");
+    if (!f) { perror("collisions_cpu.txt"); return 1; }
     fprintf(f, "particle_ID,t,x,y,vx,vy\n");
     long long rows = 0, full = 0;
     for (int i = 0; i < N_P; ++i) {
@@ -161,7 +139,7 @@ int main() {
     }
     fclose(f);
 
-    printf("collisions_gpu.txt: %lld rows\n", rows);
+    printf("collisions_cpu.txt: %lld rows\n", rows);
     if (full)
         printf("WARNING: %lld particle(s) hit the %d-slot limit — their logs are "
                "truncated; raise N_REFLECTIONS to keep the rest\n", full, N_REFLECTIONS);

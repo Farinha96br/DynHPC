@@ -22,6 +22,13 @@
 #include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
 #include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
+
+// force field for this simulation — declared in physics.h, defined by the main
+// script; inside the declare target block so the GPU gets its own copy
+vector2D force_at_position(double x, double y) {
+    // uniform gravity downwards
+    return vector2D(0.0, -1.0);
+}
 #pragma omp end declare target
 
 /*
@@ -43,7 +50,9 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
     const double dt    = 1e-3;   // integration time step
-    const double t_end = 100.0;    // total simulated time
+    const double t_end = 1.0;    // total simulated time
+    // step count is integer: the loop time must not accumulate dt
+    const long long N_STEPS = (long long)(t_end / dt + 0.5);
     const int    N_P   = 1e6;    // number of particles
 
     // ── random initial conditions (reproducible seed) ──────────────────────────
@@ -55,7 +64,7 @@ int main() {
         double y  = (rand()/(double)RAND_MAX) * 8.0 - 4.0;   // [-4, 4]
         if (x*x + y*y > 3.99*3.99) continue;                   // inside r=3.5
         double vx =  0.0;
-        double vy = -3.0;
+        double vy =  0.0;
         ps[placed++] = state(x, y, vx, vy);
     }
 
@@ -99,8 +108,7 @@ int main() {
             map(to: cobjs[0:5]) map(tofrom: ps[0:N_P])
     for (int i = 0; i < N_P; ++i) {
         state  p = ps[i];
-        double t = 0.0;   // elapsed simulated time of particle i
-        while (t < t_end) {                                    // time loop
+        for (long long step = 0; step < N_STEPS; ++step) {     // time loop
             double dt_left = dt;
             for (int b = 0; b < MAX_BOUNCES_PER_STEP; ++b) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
@@ -111,7 +119,6 @@ int main() {
                 dt_left -= ev.dt_hit;
                 if (dt_left <= 0.0) break;
             }
-            t += dt;
         }
         ps[i] = p;   // final state back to host
     }

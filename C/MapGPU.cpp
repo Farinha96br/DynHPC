@@ -21,6 +21,13 @@
 #include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
 #include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
+
+// force field for this simulation — declared in physics.h, defined by the main
+// script; inside the declare target block so the GPU gets its own copy
+vector2D force_at_position(double x, double y) {
+    // uniform gravity downwards
+    return vector2D(0.0, -1.0);
+}
 #pragma omp end declare target
 
 /*
