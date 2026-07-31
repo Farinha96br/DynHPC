@@ -2,8 +2,8 @@
 // Regenerate:  python python/gen_table.py <output.h>
 //
 // Collision-world table: implicit shape functions F(x,y)=0 with their exact
-// symbolic derivatives dF/dx, dF/dy, plus no-collision masks. Dispatched by
-// integer ID (GPU-safe: no function pointers).
+// symbolic derivatives dF/dx, dF/dy. Dispatched by integer ID (GPU-safe: no
+// function pointers).
 
 // shape IDs: 0 = circle,  1 = line
 double circle_F (const double* p, double x, double y){ return (x - p[0])*(x - p[0]) + (y - p[1])*(y - p[1]) - p[2]*p[2]; }
@@ -13,13 +13,6 @@ double circle_dy(const double* p, double x, double y){ return 2*y - 2*p[1]; }
 double line_F (const double* p, double x, double y){ return -x*p[0] + y + p[1]; }
 double line_dx(const double* p, double x, double y){ return -p[0]; }
 double line_dy(const double* p, double x, double y){ return 1.0; }
-
-// mask IDs: 0 = mask_right,  1 = mask_left,  2 = mask_upper,  3 = mask_lower
-//            (< 0 at the impact point suppresses the hit)
-double mask_right_F(const double* p, double x, double y){ return -x + p[0]; }
-double mask_left_F(const double* p, double x, double y){ return x - p[0]; }
-double mask_upper_F(const double* p, double x, double y){ return -y + p[0]; }
-double mask_lower_F(const double* p, double x, double y){ return y - p[0]; }
 
 // ── integer-dispatch wrappers (GPU-compatible, no function pointers) ──────────
 
@@ -44,15 +37,5 @@ double eval_dy(int id, const double* p, double x, double y) {
         case 0: return circle_dy(p, x, y);
         case 1: return line_dy  (p, x, y);
         default: return 0.0;
-    }
-}
-
-double eval_mask(int id, const double* p, double x, double y) {
-    switch (id) {
-        case 0: return mask_right_F(p, x, y);
-        case 1: return mask_left_F (p, x, y);
-        case 2: return mask_upper_F(p, x, y);
-        case 3: return mask_lower_F(p, x, y);
-        default: return 1.0;   // positive → no suppression
     }
 }

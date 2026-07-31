@@ -5,8 +5,7 @@
 // Simulation only, no I/O: particles are advanced from t = 0 to t_end and
 // their final states are left in ps[] (mapped back from the GPU).
 
-#define MAX_PARAMS 10   // max parameters per shape / mask
-#define MAX_MASKS   8   // max no-collision masks per CollisionableObject
+#define MAX_PARAMS 10   // max parameters per shape
 
 
 // load basic libs (host-only)
@@ -18,8 +17,8 @@
 // everything included inside this block is compiled for BOTH host and GPU;
 // only GPU-safe code may live here (no I/O, no allocation, no function pointers)
 #pragma omp declare target
-#include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
-#include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
+#include "types.h"      // vector2D, state, equationSet, collisionEvent, CollisionableObject
+#include "sampleTable.h"  // implicit shape functions + integer-ID dispatch (eval_F/eval_dx/eval_dy)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
 #pragma omp end declare target
 
@@ -42,8 +41,8 @@ Shape dispatch uses integer IDs + switch (see thisTable.h).
 
 int main() {
     // ── simulation parameters ───────────────────────────────────────────────────
-    const double dt    = 1e-2;   // integration time step
-    const double t_end = 1e5;    // total simulated time
+    const double dt    = 1e-3;   // integration time step
+    const double t_end = 1e4;    // total simulated time
     const int    N_P   = 20;    // number of particles
 
     // ── initial conditions ─────────────────────────────────────────────────────
@@ -56,8 +55,6 @@ int main() {
     }
 
     const int N_OBJ = 2;
-    const int N_L   = 1;
-    Layer layers[N_L];   // single mask-less layer: everything collides everywhere
     CollisionableObject cobjs[N_OBJ];
     cobjs[0].obj = {"Circle",    3, {0.0,  0.0  , 1.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
     cobjs[1].obj = {"Line",      2, {0.0,  -1.1},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
@@ -80,7 +77,7 @@ int main() {
 
     // the buffers are written on the device and read on the host -> map(from:)
     #pragma omp target teams distribute parallel for \
-        map(to: cobjs[0:N_OBJ], layers[0:N_L]) \
+        map(to: cobjs[0:N_OBJ]) \
         map(from: buffer_times[0:BUF_SZ], buffer_IDS[0:BUF_SZ], \
                     buffer_x[0:BUF_SZ], buffer_y[0:BUF_SZ], \
                     buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P]) \
@@ -98,7 +95,7 @@ int main() {
             double dt_left = dt;
             while (dt_left > 0.0) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, layers, dt_left); // 2. detect
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, dt_left); // 2. detect
                 if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
                 p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
                 bool resting = (ev.dt_hit <= 0.0);

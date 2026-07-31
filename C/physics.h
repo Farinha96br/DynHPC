@@ -56,13 +56,13 @@ state singleStep(const state& p, double dt) {
 }
 
 // find the earliest surface crossing between p and s_new = singleStep(p, dt);
-// obj_idx = -1 when nothing (unmasked) was hit.
+// obj_idx = -1 when nothing was hit.
 // The returned s_hit is the NEAR-side state: the last integrated state that has
 // NOT yet crossed the surface. Bouncing from there keeps the particle on the
 // legal side for any restitution — it can never be marooned inside/behind a wall.
 collisionEvent detectFirstCollision(const state& p, const state& s_new,
                                     const CollisionableObject* objs, int n_objs,
-                                    const Layer* layers, double dt) {
+                                    double dt) {
     collisionEvent ev(-1, dt, s_new);
 
     for (int i = 0; i < n_objs; ++i) {
@@ -72,32 +72,20 @@ collisionEvent detectFirstCollision(const state& p, const state& s_new,
 
         double dt_small = 0.0, dt_large = dt;
         state  s_before = p;      // near side (not yet crossed)
-        state  s_surf   = s_new;  // far side (crossed) — used only for the mask test
-        if (fabs(F_old) <= 1e-8 * fabs(F_new - F_old)) {
-            // contact at step start: the particle already touches the surface
-            // (resting/sliding). Impact = the start state itself; skipping the
-            // bisection keeps resting particles ~free instead of 32× a step.
-            s_surf = p;
-        } else {
+        if (fabs(F_old) > 1e-8 * fabs(F_new - F_old)) {
+            // contact at step start (the particle already touches the surface,
+            // resting/sliding) skips the bisection: impact = the start state
+            // itself, keeping resting particles ~free instead of 32× a step.
             for (int iter = 0; iter < 32; ++iter) {
                 double dt_mid = 0.5*(dt_small + dt_large);
                 state  s_mid  = singleStep(p, dt_mid);
                 double F_mid  = eval_F(objs[i].obj.shape_id, objs[i].obj.p, s_mid.position.x, s_mid.position.y);
                 // F_mid == 0 counts as crossed, so s_before always keeps a strictly
                 // legal-sign F — an exact-zero F would blind the next step's detection
-                if (F_old * F_mid < 0.0 || F_mid == 0.0) { dt_large = dt_mid; s_surf   = s_mid; }
+                if (F_old * F_mid < 0.0 || F_mid == 0.0) { dt_large = dt_mid; }
                 else                                      { dt_small = dt_mid; s_before = s_mid; }
             }
         }
-
-        // masks are shared per layer: a hit on any object of the layer is
-        // suppressed when one of the layer's masks is negative at the impact
-        const Layer& L = layers[objs[i].layer_id];
-        bool masked = false;
-        for (int m = 0; m < L.n_masks && !masked; ++m)
-            if (eval_mask(L.masks[m].mask_id, L.masks[m].p, s_surf.position.x, s_surf.position.y) < 0.0)
-                masked = true;
-        if (masked) continue;
 
         if (dt_small < ev.dt_hit) { ev.obj_idx = i; ev.dt_hit = dt_small; ev.s_hit = s_before; }
     }

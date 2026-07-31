@@ -48,32 +48,8 @@ struct collisionEvent {
         : obj_idx(idx), dt_hit(dth), s_hit(s) {}
 };
 
-struct mask {
-    /*
-    Define a mask, where:
-    mask_id: registered mask index (see eval_mask), -1 = inactive/undefined.
-    p: parameters of the mask (up to MAX_PARAMS)
-    */
-    int    mask_id       = -1;   // registered mask index (see eval_mask); -1 = inactive
-    double p[MAX_PARAMS] = {};
-};
-
-struct Layer {
-    /*
-    A layer groups CollisionableObjects that share the same no-collision masks.
-    Objects reference their layer by index (CollisionableObject::layer_id).
-    masks: carve out regions where NO object of this layer collides — a hit on
-           any object of the layer is ignored when any mask evaluates negative
-           at the impact point.
-    n_masks: how many mask slots are in use (0 = layer collides everywhere).
-    */
-    mask masks[MAX_MASKS];
-    int  n_masks = 0;
-};
-
 class CollisionableObject {
 public:
     equationSet obj;
     double      restitution = 1.0;
-    int         layer_id    = 0;   // index into the layers[] array; masks come from there
 };

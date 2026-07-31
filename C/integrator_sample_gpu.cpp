@@ -5,8 +5,7 @@
 // Simulation only, no I/O: particles are advanced from t = 0 to t_end and
 // their final states are left in ps[] (mapped back from the GPU).
 
-#define MAX_PARAMS 10   // max parameters per shape / mask
-#define MAX_MASKS   8   // max no-collision masks per CollisionableObject
+#define MAX_PARAMS 10   // max parameters per shape
 
 
 // load basic libs (host-only)
@@ -18,8 +17,8 @@
 // everything included inside this block is compiled for BOTH host and GPU;
 // only GPU-safe code may live here (no I/O, no allocation, no function pointers)
 #pragma omp declare target
-#include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
-#include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
+#include "types.h"      // vector2D, state, equationSet, collisionEvent, CollisionableObject
+#include "sampleTable.h"  // implicit shape functions + integer-ID dispatch (eval_F/eval_dx/eval_dy)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
 #pragma omp end declare target
 
@@ -55,22 +54,14 @@ int main() {
         ps[i] = state(0.0, 2.0, vx, 0.0);
     }
 
-    // ── layers ─────────────────────────────────────────────────────────────────
-    // layer 0: the two touching circles, with a pass-through disk at the touch
-    //          point — particles cross BOTH circles inside that disk.
-    // layer 1: the bounding box, no masks.
-    const int N_L = 2;
-    Layer layers[N_L];
-    layers[0].masks[0] = {4, {0.0, 0.0, 0.3}};  layers[0].n_masks = 1;  // pass-through circle at (0,0), r=0.3
-
     const int N_OBJ = 6;
     CollisionableObject cobjs[N_OBJ];
-    cobjs[0].obj = {"CircleL", 3, {-1.0, 0.0, 1.0}, 0};  cobjs[0].layer_id = 0;  // touching circles at (±1,0), r=1,
-    cobjs[1].obj = {"CircleR", 3, { 1.0, 0.0, 1.0}, 0};  cobjs[1].layer_id = 0;  // touch point = origin
-    cobjs[2].obj = {"Floor",   2, {0.0,  3.0}, 1};       cobjs[2].layer_id = 1;  // y = -3
-    cobjs[3].obj = {"Ceil",    2, {0.0, -3.0}, 1};       cobjs[3].layer_id = 1;  // y =  3
-    cobjs[4].obj = {"WallL",   1, {-3.0}, 3};            cobjs[4].layer_id = 1;  // x = -3 (vertical line shape)
-    cobjs[5].obj = {"WallR",   1, { 3.0}, 3};            cobjs[5].layer_id = 1;  // x =  3
+    cobjs[0].obj = {"CircleL", 3, {-1.0, 0.0, 1.0}, 0};  // touching circles at (±1,0), r=1,
+    cobjs[1].obj = {"CircleR", 3, { 1.0, 0.0, 1.0}, 0};  // touch point = origin
+    cobjs[2].obj = {"Floor",   2, {0.0,  3.0}, 1};       // y = -3
+    cobjs[3].obj = {"Ceil",    2, {0.0, -3.0}, 1};       // y =  3
+    cobjs[4].obj = {"WallL",   1, {-3.0}, 3};            // x = -3 (vertical line shape)
+    cobjs[5].obj = {"WallR",   1, { 3.0}, 3};            // x =  3
 
     int N_REFLECTIONS = 10000;   // max collisions recorded per particle
 
@@ -90,7 +81,7 @@ int main() {
 
     // the buffers are written on the device and read on the host -> map(from:)
     #pragma omp target teams distribute parallel for \
-        map(to: cobjs[0:N_OBJ], layers[0:N_L]) \
+        map(to: cobjs[0:N_OBJ]) \
         map(from: buffer_times[0:BUF_SZ], buffer_IDS[0:BUF_SZ], \
                     buffer_x[0:BUF_SZ], buffer_y[0:BUF_SZ], \
                     buffer_vx[0:BUF_SZ], buffer_vy[0:BUF_SZ], buffer_n[0:N_P]) \
@@ -108,7 +99,7 @@ int main() {
             double dt_left = dt;
             while (dt_left > 0.0) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, layers, dt_left); // 2. detect
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, N_OBJ, dt_left); // 2. detect
                 if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
                 p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
                 bool resting = (ev.dt_hit <= 0.0);

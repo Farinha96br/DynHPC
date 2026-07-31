@@ -5,8 +5,7 @@
 // Simulation only, no I/O: particles are advanced from t = 0 to t_end and
 // their final states are left in ps[].
 
-#define MAX_PARAMS 10   // max parameters per shape / mask
-#define MAX_MASKS   8   // max no-collision masks per CollisionableObject
+#define MAX_PARAMS 10   // max parameters per shape
 
 
 // load basic libs
@@ -15,8 +14,8 @@
 #include <omp.h>
 
 // simulation headers (shared with the GPU version)
-#include "types.h"      // vector2D, state, equationSet, mask, collisionEvent, CollisionableObject
-#include "sampleTable.h"  // implicit shape/mask functions + integer-ID dispatch (eval_F/eval_dx/eval_dy/eval_mask)
+#include "types.h"      // vector2D, state, equationSet, collisionEvent, CollisionableObject
+#include "sampleTable.h"  // implicit shape functions + integer-ID dispatch (eval_F/eval_dx/eval_dy)
 #include "physics.h"    // yoshida4Step, singleStep, detectFirstCollision, resolveCollision
 
 /*
@@ -51,21 +50,12 @@ int main() {
     // Each surface is the zero level-set of an implicit function F(x,y) = 0,
     // selected by shape_id (see eval_F in thisTable.h). equationSet initializer:
     //   { name, n_params, { params... }, shape_id }
-    // Masks live on layers and carve out regions where NO object of that layer
-    // collides: a hit is ignored when any of the layer's masks evaluates
-    // negative at the impact point. Objects pick their layer via layer_id.
-    Layer layers[3];                                       // layer 0: no masks (walls collide everywhere)
-    layers[1].masks[0] = {0, {-1.5}};  layers[1].n_masks = 1;  // layer 1: masked for x > -1.5
-    layers[2].masks[0] = {1, { 1.5}};  layers[2].n_masks = 1;  // layer 2: masked for x <  1.5
-
     CollisionableObject cobjs[5];
-    cobjs[0].obj = {"Circle",    3, {0.0,  0.0, 4.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
-    cobjs[1].obj = {"Line",      2, {0.0,  2.0},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
-    cobjs[2].obj = {"Sine",      3, {1.0,  1.0, 0.0}, 2};  cobjs[2].restitution = 1.0;  // wavy floor: y = 1*sin(1*x + 0)
-    cobjs[3].obj = {"LeftOnly",  3, {-1.5, 2.5, 0.5}, 0};  cobjs[3].restitution = 1.0;  // circle at (-1.5,2.5), r=0.5 ...
-    cobjs[3].layer_id = 1;                                                              // ... collides on its left half only (layer 1)
-    cobjs[4].obj = {"RightOnly", 3, { 1.5, 2.5, 0.5}, 0};  cobjs[4].restitution = 1.0;  // circle at (1.5,2.5), r=0.5 ...
-    cobjs[4].layer_id = 2;                                                              // ... collides on its right half only (layer 2)
+    cobjs[0].obj = {"Circle",  3, {0.0,  0.0, 4.0}, 0};  cobjs[0].restitution = 1.0;  // outer wall: circle at (0,0), r=4
+    cobjs[1].obj = {"Line",    2, {0.0,  2.0},      1};  cobjs[1].restitution = 1.0;  // flat floor: y = 0*x - 2
+    cobjs[2].obj = {"Sine",    3, {1.0,  1.0, 0.0}, 2};  cobjs[2].restitution = 1.0;  // wavy floor: y = 1*sin(1*x + 0)
+    cobjs[3].obj = {"CircleL", 3, {-1.5, 2.5, 0.5}, 0};  cobjs[3].restitution = 1.0;  // circle at (-1.5,2.5), r=0.5
+    cobjs[4].obj = {"CircleR", 3, { 1.5, 2.5, 0.5}, 0};  cobjs[4].restitution = 1.0;  // circle at (1.5,2.5), r=0.5
 
     // ── simulation ─────────────────────────────────────────────────────────────
     // Particles never interact, so each one runs its whole time loop
@@ -86,7 +76,7 @@ int main() {
             double dt_left = dt;
             for (int b = 0; b < MAX_BOUNCES_PER_STEP; ++b) {
                 state s_new = singleStep(p, dt_left);                                  // 1. integrate
-                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, layers, dt_left); // 2. detect
+                collisionEvent ev = detectFirstCollision(p, s_new, cobjs, 5, dt_left); // 2. detect
                 if (ev.obj_idx < 0) { p = s_new; break; }      // no (more) contacts this step
                 // ── collision event hook: per-collision logic goes here ──
                 p = resolveCollision(ev, cobjs[ev.obj_idx], p.mass, dt_left);          // 3. resolve
