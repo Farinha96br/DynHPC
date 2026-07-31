@@ -41,3 +41,5 @@ Thumbs.db
 
 # shared libraries
 *.so
+*.png
+*.txt
